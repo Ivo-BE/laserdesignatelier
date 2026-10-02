@@ -158,8 +158,17 @@ textarea { width: 100%; resize: vertical; font: inherit; color: var(--fg); backg
 .swbtn small { color: var(--muted); font-size: 12px; }
 .swbtn[aria-pressed="true"] { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
 .steps { margin: 0; padding-left: 20px; display: grid; gap: 4px; font-size: 13.5px; }
-.acct { display: inline-flex; align-items: center; gap: 6px; }
-.adot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+.acct { display: inline-flex; align-items: center; gap: 8px; padding: 5px 12px 5px 9px; border: 1.5px solid var(--accent); border-radius: 999px; background: var(--panel); color: var(--accent); cursor: pointer; font: inherit; text-align: left; }
+.acct:hover { background: var(--bg); }
+.acct svg { width: 20px; height: 20px; flex: none; }
+.acctTxt { display: grid; line-height: 1.15; }
+.acctTxt b { font-weight: 600; font-size: 14px; }
+.acctTxt small { font-size: 11.5px; color: var(--muted); }
+.adot { width: 9px; height: 9px; border-radius: 50%; background: var(--warn); flex: none; }
+.acct.ok { border-color: var(--ok); color: var(--fg); }
+a.btn { text-decoration: none; color: inherit; display: inline-flex; align-items: center; }
+a.btn.primary { color: var(--accent-ink); }
+input[type="email"] { font: inherit; color: var(--fg); background: var(--bg); border: 1px solid var(--line); border-radius: var(--r); padding: 7px 9px; }
 .adot.ok { background: var(--ok); }
 .licbox { display: grid; gap: 10px; }
 .licbox input[type=email] { width: 100%; }
@@ -261,13 +270,17 @@ input[type="range"] { width: 100%; accent-color: var(--accent); }
     <div class="actions">
       <button class="btn" id="btnUndo" title="Ongedaan maken (Ctrl+Z)">Ongedaan</button>
       <button class="btn" id="btnProjects">Mijn ontwerpen</button>
-      <button class="btn acct" id="btnAccount" hidden><span class="adot" id="acctDot"></span><span id="acctLbl">Inloggen</span></button>
       <button class="btn" id="btnPng">Preview</button>
       <button class="btn" id="btnCost">Tijd en kosten</button>
       <button class="btn" id="btnSvg">SVG</button>
       <button class="btn primary" id="btnZip">LightBurn-pakket</button>
       <button class="btn" id="btnExport">Andere lasersoftware…</button>
     </div>
+    <button class="acct" id="btnAccount" type="button" hidden title="Account en licentie">
+      <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><circle cx="10" cy="7" r="3.2"/><path d="M3.5 17c.8-3.2 3.4-5 6.5-5s5.7 1.8 6.5 5"/></svg>
+      <span class="acctTxt"><b id="acctLbl">Inloggen</b><small id="acctSub">Proef of licentie</small></span>
+      <span class="adot" id="acctDot"></span>
+    </button>
   </header>
 
   <main class="work">
@@ -3673,8 +3686,17 @@ const APP = /*__APP__*/{ standalone: false };
     const manageUrl = (em) => `${SHOP}/mijn?brand=${SLUG}${em ? '&email=' + encodeURIComponent(em) : ''}`;
     function render() {
       const lbl = $('acctLbl'), dot = $('acctDot');
-      if (valid()) { const days = Math.ceil((new Date(lic.valid_until) - new Date()) / 864e5); lbl.textContent = lic.kind === 'trial' ? `Proef · ${days} dag${days === 1 ? '' : 'en'}` : 'Licentie actief'; dot.classList.add('ok'); }
-      else { lbl.textContent = user ? 'Geen licentie' : 'Inloggen'; dot.classList.remove('ok'); }
+      const sub = $('acctSub'), btn = $('btnAccount');
+      if (valid()) {
+        const days = Math.ceil((new Date(lic.valid_until) - new Date()) / 864e5);
+        lbl.textContent = lic.kind === 'trial' ? `Proef: nog ${days} dag${days === 1 ? '' : 'en'}` : 'Licentie actief';
+        sub.textContent = lic.kind === 'trial' ? 'Licentie kopen' : `tot ${d8(lic.valid_until)}`;
+        dot.classList.add('ok'); btn.classList.add('ok');
+      } else {
+        lbl.textContent = user ? 'Geen licentie' : 'Inloggen';
+        sub.textContent = user ? 'Proef starten of kopen' : 'Gratis proef of licentie';
+        dot.classList.remove('ok'); btn.classList.remove('ok');
+      }
       const st = $('lcStatus');
       st.className = 'cstat' + (valid() ? '' : ' bad');
       $('lcLogin').hidden = !!user;
