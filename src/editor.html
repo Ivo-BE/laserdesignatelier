@@ -264,6 +264,9 @@ input[type="range"] { width: 100%; accent-color: var(--accent); }
 .ehover { fill: rgba(220, 38, 38, .35); stroke: #dc2626; }
 .ehover.split { fill: rgba(37, 99, 235, .3); stroke: #2563eb; }
 .ecut { fill: rgba(220, 38, 38, .12); stroke: #dc2626; }
+.efill { fill: rgba(17, 17, 17, .85); stroke: #f59e0b; }
+.efill.hov { fill: rgba(17, 17, 17, .45); }
+.ecut.add { fill: rgba(17, 17, 17, .35); stroke: #111; }
 .ecut.keep { fill: rgba(22, 163, 74, .12); stroke: #16a34a; }
 .radios { display: grid; gap: 4px; }
 .cstat { font-size: 13px; padding: 7px 9px; border-radius: var(--r); border-left: 3px solid var(--ok); background: var(--bg); }
@@ -959,7 +962,7 @@ const APP = /*__APP__*/{ standalone: false };
   const trace = { active: false, src: null, w: 0, h: 0, dataUrl: '', mode: 'bw', threshold: 128, invert: false, colors: 3,
     detail: 8, smooth: 1, widthMm: 80, x: 10, y: 10, skipBg: true, roles: [], layers: [], busy: false, name: '',
     // gestapelde lagen
-    stackOrder: [], stackFrame: true, stackBorder: 6, stackMin: 0.6, stackGap: 5, stack: [] };
+    stackOrder: [], stackFrame: true, stackBorder: 6, stackMin: 0.6, stackGap: 5, stack: [], fromItems: null };
   document.getElementById('btnTrace').addEventListener('click', () => document.getElementById('fileTrace').click());
   document.getElementById('fileTrace').addEventListener('change', (e) => {
     const f = e.target.files[0]; e.target.value = '';
@@ -1160,7 +1163,7 @@ const APP = /*__APP__*/{ standalone: false };
     });
     state.items.push(...made);
     state.sel = made[0].id; state.multi = made.slice(1).map((m) => m.id);
-    trace.active = false; trace.src = null; trace.layers = []; trace.stack = [];
+    trace.active = false; trace.src = null; trace.layers = []; trace.stack = []; trace.fromItems = null;
     fit();
     // meteen tonen hoe het eruitziet als alles op elkaar ligt
     setTimeout(() => { pvMode = 'stack'; pvStack = sid; showPreview(); }, 50);
@@ -1171,7 +1174,7 @@ const APP = /*__APP__*/{ standalone: false };
     const outL = traceOutputLayers();
     if (!outL.length) return toast('Er is niets om toe te voegen. Pas de drempel of het aantal kleuren aan.');
     snapshot();
-    const made = outL.map((l, i) => ({ id: nid(), role: l.role, type: 'path', evenodd: true, name: `${trace.name || 'Afbeelding'}${outL.length > 1 ? ' ' + (i + 1) : ''}`, subpaths: l.subpaths }));
+    const made = outL.map((l, i) => ({ id: nid(), role: l.role, type: 'path', evenodd: true, srcColor: hexColor(l.color), name: `${trace.name || 'Afbeelding'}${outL.length > 1 ? ' ' + (i + 1) : ''}`, subpaths: l.subpaths }));
     if (made.length > 1) { const g = newGid(); made.forEach((m) => { m.group = g; }); }
     state.items.push(...made);
     state.sel = made[0].id; state.multi = made.slice(1).map((m) => m.id);
@@ -1179,9 +1182,14 @@ const APP = /*__APP__*/{ standalone: false };
     render();
     toast(`${made.length} vectorvorm${made.length > 1 ? 'en' : ''} toegevoegd. Controleer de bewerking rechts en de lasercheck.`);
   }
-  function cancelTrace() { trace.active = false; trace.src = null; trace.layers = []; render(); }
+  function cancelTrace() { trace.active = false; trace.src = null; trace.layers = []; trace.fromItems = null; render(); }
 
   function renderTracePanel(head) {
+    if (trace.fromItems) {
+      head.innerHTML = '<span class="kind">Functie</span><span class="name">Gestapeld kunstwerk maken</span><span class="explain">Elke vorm wordt een laag. De onderste laag is de volle plaat; elke laag erboven is iets kleiner. Op de plaat zie je hoe het eruitziet als alles op elkaar ligt.</span>';
+      const wrap = document.createElement('div'); wrap.style.display = 'grid'; wrap.style.gap = '12px';
+      return renderStackPanel(wrap, null, null, null);
+    }
     head.innerHTML = '<span class="kind">Functie</span><span class="name">Afbeelding omzetten naar vector</span><span class="explain">Het werkt het best met logo\'s, tekeningen en silhouetten met duidelijke vlakken. Foto\'s graveer je beter als foto (knop erboven).</span>';
     const wrap = document.createElement('div'); wrap.style.display = 'grid'; wrap.style.gap = '12px';
     const seg = document.createElement('div'); seg.className = 'seg'; seg.setAttribute('role', 'group');
@@ -1262,6 +1270,41 @@ const APP = /*__APP__*/{ standalone: false };
     props.appendChild(wrap);
   }
 
+  // Lagen stapelen vanuit vormen die al op de plaat staan (bv. een omgezette afbeelding die je eerst opgekuist hebt)
+  function startStackFromItems(items) {
+    const parts = items.filter((i) => i.type !== 'image' && i.type !== 'line' && !isHidden(i));
+    if (!parts.length) return toast('Selecteer eerst de vormen waar je lagen van wilt maken.');
+    if (!window.ClipperLib) return toast('De rekenmodule kon niet laden.');
+    const bb = selBBox(parts);
+    const geo = (it) => { const ex = toExportItem(it); return ex.type === 'path' ? ex.subpaths : itemSubpaths(ex); };
+    const lumOf = (hex) => { const v = parseInt(hex.slice(1), 16); return 0.299 * (v >> 16) + 0.587 * ((v >> 8) & 255) + 0.114 * (v & 255); };
+    const layers = parts.map((it) => { const color = it.srcColor || it.layerColor || (ROLE[it.role].fill ? '#2a2420' : '#8a6d4b'); return { color, lum: lumOf(color), subpaths: geo(it) }; });
+    // bedekt geen enkele vorm (bijna) het hele vlak, dan komt er een onderplaat bij
+    const SC = 1000, C = ClipperLib;
+    const areaOf = (sps) => { const c = new C.Clipper(); c.AddPaths(sps.map((sp) => flattenSubpath(sp, 0.2).map((q) => ({ X: Math.round(q[0] * SC), Y: Math.round(q[1] * SC) }))), C.PolyType.ptSubject, true); const out = new C.Paths(); c.Execute(C.ClipType.ctUnion, out, C.PolyFillType.pftEvenOdd, C.PolyFillType.pftEvenOdd); return out.reduce((a, p) => a + C.Clipper.Area(p), 0) / SC / SC; };
+    const full = layers.some((l) => areaOf(l.subpaths) > 0.9 * bb.w * bb.h);
+    if (!full) layers.push({ color: '#efe3c8', lum: 999, subpaths: [{ start: [bb.x, bb.y], segs: [{ t: 'L', p: [bb.x + bb.w, bb.y] }, { t: 'L', p: [bb.x + bb.w, bb.y + bb.h] }, { t: 'L', p: [bb.x, bb.y + bb.h] }], closed: true }], plate: true });
+    Object.assign(trace, { active: true, mode: 'stack', src: null, dataUrl: '', w: bb.w, h: bb.h, widthMm: bb.w, x: bb.x, y: bb.y, layers, fromItems: parts.map((p) => p.id), name: 'Lagen' });
+    trace.stackOrder = layers.map((l, i) => i).sort((a, b) => layers[b].lum - layers[a].lum);
+    trace.stack = buildStack();
+    contour.active = false; edit.active = false;
+    state.sel = null; state.multi = [];
+    render();
+  }
+  function stackFromControls(items) {
+    const parts = items.filter((i) => ['path', 'weld', 'text', 'rect', 'ellipse'].includes(i.type) && !i.stack);
+    if (!parts.length) return null;
+    const g = document.createElement('div'); g.className = 'group';
+    const t = document.createElement('div'); t.className = 'gl'; t.textContent = 'Gestapeld kunstwerk maken';
+    const ex = document.createElement('p'); ex.className = 'explain';
+    ex.textContent = parts.length > 1
+      ? `Elk van deze ${parts.length} vormen wordt een eigen laag om apart uit te snijden en op elkaar te lijmen. Handig na het omzetten van een afbeelding in kleuren, als je de vormen eerst opgekuist hebt.`
+      : 'Deze vorm wordt een laag bovenop een volle onderplaat, om apart uit te snijden en op elkaar te lijmen. Selecteer meerdere vormen voor meer lagen.';
+    const b = document.createElement('button'); b.type = 'button'; b.className = 'btn primary'; b.textContent = 'Lagen maken…';
+    b.addEventListener('click', () => startStackFromItems(parts));
+    g.append(t, ex, b);
+    return g;
+  }
   function renderStackPanel(wrap, seg, ctrls, size) {
     const lg = document.createElement('div'); lg.className = 'group';
     const lt = document.createElement('div'); lt.className = 'gl'; lt.textContent = 'Volgorde van de lagen (bovenste eerst)';
@@ -1306,7 +1349,7 @@ const APP = /*__APP__*/{ standalone: false };
     const no = document.createElement('button'); no.className = 'btn'; no.type = 'button'; no.textContent = 'Annuleren';
     no.addEventListener('click', cancelTrace);
     row.append(ok, no);
-    wrap.append(seg, ctrls, size, lg, opts, st, row);
+    wrap.append(...[seg, ctrls, size, lg, opts, st, row].filter(Boolean));
     props.appendChild(wrap);
   }
 
@@ -1377,7 +1420,28 @@ const APP = /*__APP__*/{ standalone: false };
     if (pcs !== edit.pieces) { edit.pieces = pcs; edit.hover = -1; edit.picked = new Set(); }
     return pcs;
   }
-  function pieceAt(it, x, y) {
+  // gat onder de muis (wit vlak binnen een vorm): index van het subpad, kleinste eerst
+  function holeAt(it, x, y) {
+    const pcs = refreshPieces(it);
+    let best = -1, ba = Infinity;
+    for (const pc of pcs) for (const h of pc.idx.slice(1)) {
+      const P = pc.polys[h];
+      if (!inPoly(P, x, y)) continue;
+      const a = polyArea(P);
+      if (a < ba) { ba = a; best = h; }
+    }
+    return best;
+  }
+  // sleutel onder de muis: stuk (>= 0), gat (-(subpad + 2)) of niets (-1)
+  const holeKey = (h) => -(h + 2), keyHole = (k) => -k - 2;
+  function pickKeyAt(it, x, y) {
+    const k = pieceAt(it, x, y, { exactOnly: true });
+    if (k >= 0) return k;
+    const h = holeAt(it, x, y);
+    if (h >= 0) return holeKey(h);
+    return pieceAt(it, x, y);
+  }
+  function pieceAt(it, x, y, opts) {
     const pcs = refreshPieces(it);
     let best = -1, ba = Infinity;
     pcs.forEach((pc, k) => {
@@ -1387,6 +1451,7 @@ const APP = /*__APP__*/{ standalone: false };
       if (pc.area < ba) { ba = pc.area; best = k; }
     });
     if (best >= 0) return best;
+    if (opts && opts.exactOnly) return -1;
     // dunne delen: dichtbij de rand mag ook (3 schermpixels)
     const tol = 4 / pxmm();
     pcs.forEach((pc, k) => {
@@ -1427,13 +1492,25 @@ const APP = /*__APP__*/{ standalone: false };
     if (edit.picked.has(k)) edit.picked.delete(k); else edit.picked.add(k);
     render();
   }
+  // gaten opvullen: het gat en alles wat erin ligt verdwijnt, zodat het vlak dicht is (bv. een watermerk of vlekjes)
+  function fillHoles(it, holeIdx) {
+    const polys = it.subpaths.map(flatSub);
+    const del = new Set(holeIdx);
+    for (const h of holeIdx) polys.forEach((P, i) => { if (i !== h && polyArea(P) < polyArea(polys[h]) && inPoly(polys[h], P[0][0], P[0][1])) del.add(i); });
+    removeSubpaths(it, [...del]);
+  }
   function applyPicked(op) {
     const it = editItem(); if (!it || !edit.picked.size) return;
     const pcs = refreshPieces(it);
-    const idx = [...edit.picked].flatMap((k) => (pcs[k] ? pcs[k].idx : []));
-    const n = edit.picked.size;
+    const holes = [...edit.picked].filter((k) => k < -1).map(keyHole);
+    const idx = [...edit.picked].filter((k) => k >= 0).flatMap((k) => (pcs[k] ? pcs[k].idx : []));
+    const n = op === 'fill' ? holes.length : [...edit.picked].filter((k) => k >= 0).length;
+    if (!n) return toast(op === 'fill' ? 'Klik eerst op een wit gat in de vorm.' : 'Klik eerst op een gekleurd deel.');
     snapshot();
-    if (op === 'split') {
+    if (op === 'fill') {
+      fillHoles(it, holes);
+      toast(`${n} ${n === 1 ? 'gat' : 'gaten'} opgevuld: die plek hoort nu bij de vorm. Ctrl+Z maakt het ongedaan.`);
+    } else if (op === 'split') {
       const part = { id: nid(), role: it.role, type: 'path', evenodd: true, name: `${it.name || 'Vorm'} (deel)`, subpaths: idx.map((i) => JSON.parse(JSON.stringify(it.subpaths[i]))) };
       state.items.push(part);
       removeSubpaths(it, idx);
@@ -1450,7 +1527,7 @@ const APP = /*__APP__*/{ standalone: false };
     const a = toPaper(it);
     const poly = new paper.Path({ segments: pts, closed: true, insert: false });
     let r;
-    try { r = edit.cutOp === 'keep' ? a.intersect(poly, { insert: false }) : a.subtract(poly, { insert: false }); }
+    try { r = edit.cutOp === 'keep' ? a.intersect(poly, { insert: false }) : edit.cutOp === 'add' ? a.unite(poly, { insert: false }) : a.subtract(poly, { insert: false }); }
     catch { return toast('Knippen lukte hier niet. Probeer een iets andere vorm.'); }
     snapshot();
     it.subpaths = fromPaper(r);
@@ -1494,12 +1571,13 @@ const APP = /*__APP__*/{ standalone: false };
     const sw = 1.4 / pxmm();
     el('path', { d: svgPathD(it.subpaths), class: 'eoutline', fill: 'none', 'stroke-width': sw, 'pointer-events': 'none' }, canvas);
     if (edit.tool === 'pick') {
-      for (const k of edit.picked) if (pcs[k]) el('path', { d: svgPathD(pcs[k].idx.map((i) => it.subpaths[i])), 'fill-rule': 'evenodd', class: 'ehover', 'stroke-width': 2 / pxmm(), 'pointer-events': 'none' }, canvas);
-      if (edit.hover >= 0 && pcs[edit.hover] && !edit.picked.has(edit.hover)) el('path', { d: svgPathD(pcs[edit.hover].idx.map((i) => it.subpaths[i])), 'fill-rule': 'evenodd', class: 'ehover split', 'stroke-width': 2 / pxmm(), 'pointer-events': 'none' }, canvas);
+      const shape = (k) => (k >= 0 ? (pcs[k] ? pcs[k].idx.map((i) => it.subpaths[i]) : null) : (it.subpaths[keyHole(k)] ? [it.subpaths[keyHole(k)]] : null));
+      for (const k of edit.picked) { const sp = shape(k); if (sp) el('path', { d: svgPathD(sp), 'fill-rule': 'evenodd', class: k >= 0 ? 'ehover' : 'efill', 'stroke-width': 2 / pxmm(), 'pointer-events': 'none' }, canvas); }
+      if (edit.hover !== -1 && !edit.picked.has(edit.hover)) { const sp = shape(edit.hover); if (sp) el('path', { d: svgPathD(sp), 'fill-rule': 'evenodd', class: edit.hover >= 0 ? 'ehover split' : 'efill hov', 'stroke-width': 2 / pxmm(), 'pointer-events': 'none' }, canvas); }
     }
     if (drag && (drag.mode === 'erect' || drag.mode === 'lasso')) {
       const pts = drag.mode === 'erect' ? rectPts(drag.a, drag.b) : drag.pts;
-      el('path', { d: 'M' + pts.map((q) => `${q[0]} ${q[1]}`).join('L') + 'Z', class: edit.cutOp === 'keep' ? 'ecut keep' : 'ecut', 'stroke-width': 1.5 / pxmm(), 'stroke-dasharray': `${5 / pxmm()} ${3 / pxmm()}`, 'pointer-events': 'none' }, canvas);
+      el('path', { d: 'M' + pts.map((q) => `${q[0]} ${q[1]}`).join('L') + 'Z', class: edit.cutOp === 'keep' ? 'ecut keep' : edit.cutOp === 'add' ? 'ecut add' : 'ecut', 'stroke-width': 1.5 / pxmm(), 'stroke-dasharray': `${5 / pxmm()} ${3 / pxmm()}`, 'pointer-events': 'none' }, canvas);
     }
   }
   const rectPts = (a, b) => [[a.x, a.y], [b.x, a.y], [b.x, b.y], [a.x, b.y]];
@@ -1530,26 +1608,43 @@ const APP = /*__APP__*/{ standalone: false };
     const how = document.createElement('p'); how.className = 'explain';
     let ops;
     if (edit.tool === 'pick') {
-      how.textContent = 'Klik op de delen die je wilt bewerken: ze worden rood. Nog eens klikken haalt een deel uit je keuze. Er wordt pas iets veranderd als je hieronder op een knop drukt.';
+      how.textContent = 'Klik op wat je wilt bewerken. Een gekleurd deel wordt rood (weghalen of apart zetten). Een wit gat in de vorm wordt zwart met een oranje rand (opvullen, zodat het bij de vorm hoort). Nog eens klikken haalt het uit je keuze. Er verandert pas iets als je op een knop drukt.';
       ops = document.createElement('div'); ops.className = 'group';
-      const n = edit.picked.size;
-      const pst = document.createElement('div'); pst.className = 'cstat'; pst.textContent = n ? `${n} ${n === 1 ? 'deel' : 'delen'} gekozen.` : 'Nog niets gekozen.';
+      const np = [...edit.picked].filter((k) => k >= 0).length, nh = [...edit.picked].filter((k) => k < -1).length;
+      const n = np + nh;
+      const pst = document.createElement('div'); pst.className = 'cstat';
+      pst.textContent = n ? [np ? `${np} ${np === 1 ? 'deel' : 'delen'}` : '', nh ? `${nh} ${nh === 1 ? 'gat' : 'gaten'}` : ''].filter(Boolean).join(' en ') + ' gekozen.' : 'Nog niets gekozen.';
       const prow = document.createElement('div'); prow.className = 'row';
-      const mkb = (t, fn, primary) => { const b = document.createElement('button'); b.type = 'button'; b.className = 'btn' + (primary ? ' primary' : ''); b.textContent = t; b.disabled = !n; b.addEventListener('click', fn); return b; };
-      prow.append(mkb('Gekozen delen weghalen', () => applyPicked('remove'), true), mkb('Apart zetten als eigen object', () => applyPicked('split')), mkb('Keuze wissen', () => { edit.picked = new Set(); render(); }));
-      const pex = document.createElement('p'); pex.className = 'explain'; pex.textContent = 'Toets Delete werkt ook om de gekozen delen weg te halen.';
+      const mkb = (t, fn, primary, dis) => { const b = document.createElement('button'); b.type = 'button'; b.className = 'btn' + (primary ? ' primary' : ''); b.textContent = t; b.disabled = dis; b.addEventListener('click', fn); return b; };
+      prow.append(
+        mkb(`Gaten opvullen${nh ? ` (${nh})` : ''}`, () => applyPicked('fill'), nh > 0, !nh),
+        mkb(`Delen weghalen${np ? ` (${np})` : ''}`, () => applyPicked('remove'), np > 0 && !nh, !np),
+        mkb('Apart zetten als eigen object', () => applyPicked('split'), false, !np),
+        mkb('Keuze wissen', () => { edit.picked = new Set(); render(); }, false, !n));
+      const pex = document.createElement('p'); pex.className = 'explain'; pex.textContent = 'Een groter stuk zoals een watermerk dicht je sneller met Kader of Vrije lijn en dan "Inkleuren". Toets Delete haalt de gekozen delen weg.';
       ops.append(pst, prow, pex);
     } else {
       how.textContent = edit.tool === 'rect' ? 'Sleep een kader over de vorm.' : 'Teken met ingedrukte muis een vrije lijn rond het stuk. De lijn sluit zichzelf.';
-      ops = radios('ecop', edit.cutOp, [['remove', 'Wegknippen wat binnen de lijn valt'], ['keep', 'Alleen houden wat binnen de lijn valt']], (v) => { edit.cutOp = v; });
+      ops = radios('ecop', edit.cutOp, [['add', 'Inkleuren: wat binnen de lijn valt hoort bij de vorm (gaten en vlekjes dicht)'], ['remove', 'Wegknippen wat binnen de lijn valt'], ['keep', 'Alleen houden wat binnen de lijn valt']], (v) => { edit.cutOp = v; });
     }
     const sg = document.createElement('div'); sg.className = 'group';
-    const sgt = document.createElement('div'); sgt.className = 'gl'; sgt.textContent = 'Kleine stukjes opruimen';
+    const sgt = document.createElement('div'); sgt.className = 'gl'; sgt.textContent = 'Kleine stukjes en gaatjes opruimen';
     const sgg = document.createElement('div'); sgg.className = 'grid2';
     sgg.append(numField('Kleiner dan (mm²)', { id: 'eminA', get: () => edit.minArea, set: (v) => { edit.minArea = v; } }, edit, 0.5, 0.1));
     const sb = document.createElement('button'); sb.className = 'btn'; sb.type = 'button'; sb.textContent = 'Weghalen'; sb.style.alignSelf = 'end';
     sb.addEventListener('click', () => removeSmall(it));
     sgg.appendChild(sb);
+    const hb = document.createElement('button'); hb.className = 'btn'; hb.type = 'button'; hb.textContent = 'Gaatjes opvullen';
+    hb.title = 'Witte gaatjes kleiner dan dit oppervlak worden dichtgemaakt';
+    hb.addEventListener('click', () => {
+      const polys = it.subpaths.map(flatSub);
+      const holes = [];
+      for (const pc of refreshPieces(it)) for (const h of pc.idx.slice(1)) if (polyArea(polys[h]) < edit.minArea) holes.push(h);
+      if (!holes.length) return toast(`Geen gaatjes kleiner dan ${String(edit.minArea).replace('.', ',')} mm² gevonden.`);
+      snapshot(); fillHoles(it, holes); edit.key = ''; render();
+      toast(`${holes.length} kleine gaatjes opgevuld.`);
+    });
+    sgg.appendChild(hb);
     const small = pcs.filter((pc) => pc.area < edit.minArea).length;
     const sge = document.createElement('p'); sge.className = 'explain';
     sge.textContent = small ? `${small} stukje${small === 1 ? '' : 's'} kleiner dan ${String(edit.minArea).replace('.', ',')} mm². Zulke kruimels branden vaak weg of vallen uit.` : 'Vlekjes en kruimels uit een omgezette afbeelding haal je hier in één keer weg.';
@@ -2515,9 +2610,10 @@ const APP = /*__APP__*/{ standalone: false };
       el('rect', { class: 'flag', x: b.x - fp, y: b.y - fp, width: b.w + 2 * fp, height: b.h + 2 * fp, 'stroke-width': 2.2 / pxmm(), 'stroke-dasharray': `${5 / pxmm()} ${3 / pxmm()}` }, canvas);
     }
     // voorbeeld van het omzetten van een afbeelding
-    if (trace.active && trace.dataUrl) {
+    if (trace.active && (trace.dataUrl || trace.fromItems)) {
       const th = trace.widthMm * trace.h / trace.w;
-      el('image', { x: trace.x, y: trace.y, width: trace.widthMm, height: th, href: trace.dataUrl, opacity: 0.3, preserveAspectRatio: 'none', 'pointer-events': 'none' }, canvas);
+      if (trace.dataUrl) el('image', { x: trace.x, y: trace.y, width: trace.widthMm, height: th, href: trace.dataUrl, opacity: 0.3, preserveAspectRatio: 'none', 'pointer-events': 'none' }, canvas);
+      else el('rect', { x: trace.x - 50, y: trace.y - 50, width: trace.widthMm + 100, height: th + 100, fill: 'var(--board)', opacity: 0.92, 'pointer-events': 'none' }, canvas);
       if (trace.mode === 'stack') {
         // zo ziet het eruit als alle lagen op elkaar liggen
         trace.stack.forEach((L, k) => el('path', { d: svgPathD(L.subpaths), 'fill-rule': 'evenodd', fill: L.color, 'fill-opacity': 1, stroke: 'rgba(0,0,0,.55)', 'stroke-width': 0.8 / pxmm(), 'pointer-events': 'none', style: `filter: drop-shadow(${0.35 * (k > 0)}px ${0.35 * (k > 0)}px 0.3px rgba(0,0,0,.45))` }, canvas));
@@ -2796,7 +2892,7 @@ const APP = /*__APP__*/{ standalone: false };
     row.append(mk('Dupliceren', duplicate), mk('Verbergen', () => { all.forEach((it) => { it.hidden = true; }); render(); }), mk('Verwijderen', removeSel));
     const cb = document.createElement('button'); cb.className = 'btn'; cb.type = 'button'; cb.textContent = 'Contour eromheen…';
     cb.addEventListener('click', startContour);
-    wrap.append(...[gg, ge, stackControls(all), wb, we, cb, al, transformControls(all), foldOpt(stencilControls(all), 'stencil', 'Letters uitsnijden om door te verven'), foldOpt(seriesControls(all), 'series', 'Zelfde ontwerp, telkens een andere naam'), fold(arrayControls(), 'array', 'Hetzelfde meerdere keren naast elkaar'), row].filter(Boolean));
+    wrap.append(...[gg, ge, stackControls(all), wb, we, cb, al, transformControls(all), foldOpt(stackFromControls(all), 'stackfrom', 'Elke vorm een laag om op elkaar te lijmen'), foldOpt(stencilControls(all), 'stencil', 'Letters uitsnijden om door te verven'), foldOpt(seriesControls(all), 'series', 'Zelfde ontwerp, telkens een andere naam'), fold(arrayControls(), 'array', 'Hetzelfde meerdere keren naast elkaar'), row].filter(Boolean));
     props.appendChild(wrap);
   }
 
@@ -2922,7 +3018,7 @@ const APP = /*__APP__*/{ standalone: false };
     if (it.type === 'path' && it.shape) wrap.append(shapeControls(it));
     if (it.stack) wrap.append(stackControls([it]));
     if (it.type === 'path') wrap.append(editEntry(it), ...(it.shape ? [] : [sizeControls(it)]));
-    wrap.append(...[transformControls([it]), foldOpt(stencilControls([it]), 'stencil', 'Letters uitsnijden om door te verven'), foldOpt(seriesControls([it]), 'series', 'Zelfde ontwerp, telkens een andere naam'), fold(arrayControls(), 'array', 'Hetzelfde meerdere keren naast elkaar')].filter(Boolean));
+    wrap.append(...[transformControls([it]), foldOpt(it.type === 'path' || it.type === 'weld' ? stackFromControls([it]) : null, 'stackfrom', 'Laag bovenop een onderplaat, om op elkaar te lijmen'), foldOpt(stencilControls([it]), 'stencil', 'Letters uitsnijden om door te verven'), foldOpt(seriesControls([it]), 'series', 'Zelfde ontwerp, telkens een andere naam'), fold(arrayControls(), 'array', 'Hetzelfde meerdere keren naast elkaar')].filter(Boolean));
     props.appendChild(wrap);
     const row = document.createElement('div');
     row.className = 'row';
@@ -3229,7 +3325,7 @@ const APP = /*__APP__*/{ standalone: false };
     const handle = e.target.closest('[data-handle]');
     if (edit.active && editItem() && !(spaceDown || e.button === 1)) {
       const it = editItem();
-      if (edit.tool === 'pick') { const k = pieceAt(it, p.x, p.y); if (k >= 0) togglePiece(k); return; }
+      if (edit.tool === 'pick') { const k = pickKeyAt(it, p.x, p.y); if (k !== -1) togglePiece(k); return; }
       drag = edit.tool === 'rect' ? { mode: 'erect', a: p, b: p } : { mode: 'lasso', pts: [[p.x, p.y]] };
       return;
     }
@@ -3300,7 +3396,7 @@ const APP = /*__APP__*/{ standalone: false };
     const p = toMM(e);
     document.getElementById('cursorPos').textContent = `x ${p.x.toFixed(1)}  y ${p.y.toFixed(1)}`;
     if (!drag && edit.active && edit.tool === 'pick' && editItem()) {
-      const k = pieceAt(editItem(), p.x, p.y);
+      const k = pickKeyAt(editItem(), p.x, p.y);
       if (k !== edit.hover) { edit.hover = k; renderCanvasOnly(); }
       return;
     }
