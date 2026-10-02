@@ -3972,7 +3972,7 @@ const APP = /*__APP__*/{ standalone: false };
   document.getElementById('pjClose').addEventListener('click', () => { document.getElementById('projDlg').hidden = true; });
   document.getElementById('projDlg').addEventListener('click', (e) => { if (e.target.id === 'projDlg') e.currentTarget.hidden = true; });
   // ---------- Bestanden op de computer (zoals LightBurn) ----------
-  // Chrome en Edge: echte bestanden openen en opslaan (File System Access); daarna automatisch in hetzelfde bestand.
+  // Chrome en Edge: echte bestanden openen en opslaan (File System Access); Ctrl+S schrijft daarna in hetzelfde bestand.
   // Andere browsers: opslaan = downloaden, openen = bestand kiezen. De browser houdt altijd een reservekopie bij.
   const FILES = (() => {
     const EXT = APP.standalone ? 'lda' : 'json';
@@ -4007,7 +4007,7 @@ const APP = /*__APP__*/{ standalone: false };
       const el = $('saveState'); const d = dirty();
       el.classList.toggle('dirty', d && !!fname);
       if (handle && !d) setSaveState(`Opgeslagen in ${fname} · ${hhmm(savedAt)}`);
-      else if (handle && d) setSaveState(writing ? `Opslaan in ${fname}…` : `${fname}: nog niet opgeslagen`);
+      else if (handle && d) setSaveState(writing ? `Opslaan in ${fname}…` : `${fname}: wijzigingen niet opgeslagen (Ctrl+S)`, !writing);
       else if (fname && !d) setSaveState(`Opgeslagen als ${fname} · ${hhmm(savedAt)}`);
       else if (fname && d) setSaveState(`${fname}: wijzigingen niet opgeslagen (Ctrl+S)`, true);
       else if (d && savedJSON !== null) setSaveState('Nog niet opgeslagen als bestand (Ctrl+S)', true);
@@ -4046,17 +4046,8 @@ const APP = /*__APP__*/{ standalone: false };
       fname = name; handle = null; mark(json);
       return true;
     }
-    async function autosave() {
-      if (!handle || writing) return;
-      clearTimeout(autoTimer);
-      autoTimer = setTimeout(async () => {
-        const json = cur();
-        if (json === savedJSON) return status();
-        try { writing = true; status(); await writeTo(handle, json); writing = false; mark(json); }
-        catch { writing = false; handle = null; status(); toast('Automatisch opslaan in het bestand lukte niet. Druk op Ctrl+S om opnieuw te kiezen.'); }
-      }, 1500);
-      status();
-    }
+    // Zoals LightBurn: het bestand verandert alleen bij Opslaan. Tussendoor houdt de browser een reservekopie bij.
+    function autosave() { status(); }
     function ask(text) {
       return new Promise((res) => {
         $('akText').textContent = text; $('askDlg').hidden = false; $('akYes').focus();
@@ -4068,7 +4059,7 @@ const APP = /*__APP__*/{ standalone: false };
     async function confirmDiscard() {
       if (!APP.standalone || !dirty()) return true;
       const a = await ask(`Je wijzigingen in "${fname || projectName || 'dit ontwerp'}" zijn nog niet opgeslagen als bestand. Wil je ze eerst opslaan?`);
-      if (a === 'cancel') return false;
+      if (a === 'cancel') { render(); return false; }
       if (a === 'save') return await saveFile(false);
       return true;
     }

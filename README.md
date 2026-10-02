@@ -22,7 +22,7 @@ Product van TripleSpark, verkocht via **Sparkgate** (jaarlicentie, 14 dagen proe
 
 ## Ontwerpen bewaren (zoals LightBurn)
 - **Bestanden op de computer** (`.lda`, JSON): Bestand, Openen (Ctrl+O), Opslaan (Ctrl+S), Opslaan als (Ctrl+Shift+S), recente bestanden, slepen op de app.
-- Chrome en Edge gebruiken de File System Access API: na de eerste keer opslaan bewaart de app automatisch in hetzelfde bestand. De verwijzingen naar recente bestanden staan in IndexedDB (`handles`).
+- Chrome en Edge gebruiken de File System Access API: na de eerste keer opslaan schrijft Ctrl+S in hetzelfde bestand. Zoals in LightBurn verandert het bestand alleen bij Opslaan (geen automatisch overschrijven); de reservekopie in de browser loopt wel automatisch. De verwijzingen naar recente bestanden staan in IndexedDB (`handles`).
 - Safari en Firefox: opslaan = downloaden, openen = bestand kiezen.
 - Melding bij sluiten (`beforeunload`) en bij Nieuw of Openen als er niet-opgeslagen wijzigingen zijn.
 - Altijd ook een reservekopie in de browser (IndexedDB `projects` + `localStorage`), te openen via Bestand, Reservekopieën.
