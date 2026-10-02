@@ -184,6 +184,15 @@ input[type="email"] { font: inherit; color: var(--fg); background: var(--bg); bo
 .licbox { display: grid; gap: 10px; }
 .licbox input[type=email] { width: 100%; }
 .licgate { font-size: 14px; padding: 9px 11px; border-radius: var(--r); background: var(--warn-bg); border-left: 3px solid var(--warn); }
+.stackchip { position: absolute; z-index: 20; border: 1px solid var(--accent); background: var(--panel); color: var(--accent); border-radius: 999px; padding: 5px 12px; font: inherit; font-size: 13px; cursor: pointer; box-shadow: 0 2px 8px rgba(0,0,0,.15); }
+.stackchip:hover { background: var(--bg); }
+.stacklist { position: absolute; z-index: 21; min-width: 250px; max-height: 60%; overflow: auto; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 8px 24px rgba(0,0,0,.16); padding: 5px; display: grid; }
+.stacklist .mlabel { font-size: 11px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); padding: 4px 8px 4px; }
+.stacklist button { display: grid; grid-template-columns: 12px 1fr auto; gap: 8px; align-items: center; text-align: left; border: 0; background: none; color: var(--fg); font: inherit; font-size: 13.5px; padding: 7px 8px; border-radius: 5px; cursor: pointer; }
+.stacklist button:hover, .stacklist button:focus-visible { background: var(--bg); }
+.stacklist button.cur { font-weight: 600; }
+.stacklist button small { color: var(--muted); font-size: 11.5px; }
+.stacklist .swatch { width: 12px; height: 12px; border-radius: 3px; }
 .shapegrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(110px, 1fr)); gap: 8px; }
 .shapebtn { display: grid; gap: 6px; justify-items: center; padding: 10px 6px; border: 1px solid var(--line); border-radius: var(--r); background: var(--bg); cursor: pointer; color: var(--fg); font: inherit; font-size: 13px; }
 .shapebtn:hover { border-color: var(--accent); }
@@ -1141,7 +1150,7 @@ const APP = /*__APP__*/{ standalone: false };
 
   // ---------- Vorm bewerken: delen weghalen, apart zetten, wegknippen ----------
   // Werkt op vrije vormen (bv. een omgezette afbeelding of een contour).
-  const edit = { active: false, id: null, tool: 'pick', pickOp: 'remove', cutOp: 'remove', minArea: 2, pieces: [], key: '', hover: -1 };
+  const edit = { active: false, id: null, tool: 'pick', cutOp: 'remove', minArea: 2, pieces: [], key: '', hover: -1, picked: new Set() };
   const editItem = () => (edit.active ? state.items.find((i) => i.id === edit.id && i.type === 'path') : null);
   function flatSub(sp) {
     const pts = [sp.start];
@@ -1187,7 +1196,7 @@ const APP = /*__APP__*/{ standalone: false };
   }
   function refreshPieces(it) {
     const pcs = piecesCached(it);
-    if (pcs !== edit.pieces) { edit.pieces = pcs; edit.hover = -1; }
+    if (pcs !== edit.pieces) { edit.pieces = pcs; edit.hover = -1; edit.picked = new Set(); }
     return pcs;
   }
   function pieceAt(it, x, y) {
@@ -1235,19 +1244,27 @@ const APP = /*__APP__*/{ standalone: false };
       toast('Alles is weggehaald; de vorm is verwijderd. Ctrl+Z zet hem terug.');
     }
   }
-  function pickPiece(it, k) {
-    const pc = refreshPieces(it)[k];
-    if (!pc) return;
+  // Deel aanklikken = kiezen (nog niets verwijderd); daarna Weghalen of Apart zetten
+  function togglePiece(k) {
+    if (edit.picked.has(k)) edit.picked.delete(k); else edit.picked.add(k);
+    render();
+  }
+  function applyPicked(op) {
+    const it = editItem(); if (!it || !edit.picked.size) return;
+    const pcs = refreshPieces(it);
+    const idx = [...edit.picked].flatMap((k) => (pcs[k] ? pcs[k].idx : []));
+    const n = edit.picked.size;
     snapshot();
-    if (edit.pickOp === 'split') {
-      const part = { id: nid(), role: it.role, type: 'path', evenodd: true, name: `${it.name || 'Vorm'} (deel)`, subpaths: pc.idx.map((i) => JSON.parse(JSON.stringify(it.subpaths[i]))) };
+    if (op === 'split') {
+      const part = { id: nid(), role: it.role, type: 'path', evenodd: true, name: `${it.name || 'Vorm'} (deel)`, subpaths: idx.map((i) => JSON.parse(JSON.stringify(it.subpaths[i]))) };
       state.items.push(part);
-      removeSubpaths(it, pc.idx);
-      toast('Apart gezet als eigen object. Klik op Klaar en selecteer het om er een andere bewerking aan te geven.');
+      removeSubpaths(it, idx);
+      toast(`${n} ${n === 1 ? 'deel' : 'delen'} apart gezet als eigen object. Ctrl+Z maakt het ongedaan.`);
     } else {
-      removeSubpaths(it, pc.idx);
+      removeSubpaths(it, idx);
+      toast(`${n} ${n === 1 ? 'deel' : 'delen'} weggehaald. Ctrl+Z maakt het ongedaan.`);
     }
-    edit.key = '';
+    edit.picked = new Set(); edit.key = '';
     render();
   }
   function cutWith(it, pts) {
@@ -1298,9 +1315,9 @@ const APP = /*__APP__*/{ standalone: false };
     const pcs = refreshPieces(it);
     const sw = 1.4 / pxmm();
     el('path', { d: svgPathD(it.subpaths), class: 'eoutline', fill: 'none', 'stroke-width': sw, 'pointer-events': 'none' }, canvas);
-    if (edit.tool === 'pick' && edit.hover >= 0 && pcs[edit.hover]) {
-      const pc = pcs[edit.hover];
-      el('path', { d: svgPathD(pc.idx.map((i) => it.subpaths[i])), 'fill-rule': 'evenodd', class: edit.pickOp === 'split' ? 'ehover split' : 'ehover', 'stroke-width': 2 / pxmm(), 'pointer-events': 'none' }, canvas);
+    if (edit.tool === 'pick') {
+      for (const k of edit.picked) if (pcs[k]) el('path', { d: svgPathD(pcs[k].idx.map((i) => it.subpaths[i])), 'fill-rule': 'evenodd', class: 'ehover', 'stroke-width': 2 / pxmm(), 'pointer-events': 'none' }, canvas);
+      if (edit.hover >= 0 && pcs[edit.hover] && !edit.picked.has(edit.hover)) el('path', { d: svgPathD(pcs[edit.hover].idx.map((i) => it.subpaths[i])), 'fill-rule': 'evenodd', class: 'ehover split', 'stroke-width': 2 / pxmm(), 'pointer-events': 'none' }, canvas);
     }
     if (drag && (drag.mode === 'erect' || drag.mode === 'lasso')) {
       const pts = drag.mode === 'erect' ? rectPts(drag.a, drag.b) : drag.pts;
@@ -1335,8 +1352,15 @@ const APP = /*__APP__*/{ standalone: false };
     const how = document.createElement('p'); how.className = 'explain';
     let ops;
     if (edit.tool === 'pick') {
-      how.textContent = 'Beweeg over de vorm: het deel onder de muis licht op. Klik om het te bewerken.';
-      ops = radios('eop', edit.pickOp, [['remove', 'Weghalen'], ['split', 'Apart zetten als eigen object']], (v) => { edit.pickOp = v; });
+      how.textContent = 'Klik op de delen die je wilt bewerken: ze worden rood. Nog eens klikken haalt een deel uit je keuze. Er wordt pas iets veranderd als je hieronder op een knop drukt.';
+      ops = document.createElement('div'); ops.className = 'group';
+      const n = edit.picked.size;
+      const pst = document.createElement('div'); pst.className = 'cstat'; pst.textContent = n ? `${n} ${n === 1 ? 'deel' : 'delen'} gekozen.` : 'Nog niets gekozen.';
+      const prow = document.createElement('div'); prow.className = 'row';
+      const mkb = (t, fn, primary) => { const b = document.createElement('button'); b.type = 'button'; b.className = 'btn' + (primary ? ' primary' : ''); b.textContent = t; b.disabled = !n; b.addEventListener('click', fn); return b; };
+      prow.append(mkb('Gekozen delen weghalen', () => applyPicked('remove'), true), mkb('Apart zetten als eigen object', () => applyPicked('split')), mkb('Keuze wissen', () => { edit.picked = new Set(); render(); }));
+      const pex = document.createElement('p'); pex.className = 'explain'; pex.textContent = 'Toets Delete werkt ook om de gekozen delen weg te halen.';
+      ops.append(pst, prow, pex);
     } else {
       how.textContent = edit.tool === 'rect' ? 'Sleep een kader over de vorm.' : 'Teken met ingedrukte muis een vrije lijn rond het stuk. De lijn sluit zichzelf.';
       ops = radios('ecop', edit.cutOp, [['remove', 'Wegknippen wat binnen de lijn valt'], ['keep', 'Alleen houden wat binnen de lijn valt']], (v) => { edit.cutOp = v; });
@@ -1374,7 +1398,7 @@ const APP = /*__APP__*/{ standalone: false };
     s.addEventListener('click', () => splitPieces(it));
     row.append(b, s);
     const ex = document.createElement('p'); ex.className = 'explain';
-    ex.textContent = `Deze vorm bestaat uit ${n} ${n === 1 ? 'deel' : 'losse delen'}. Haal stukken weg die je niet wilt, knip een stuk weg met een kader of vrije lijn, of splits alles in losse objecten. Dubbelklik op de vorm werkt ook.`;
+    ex.textContent = `Deze vorm bestaat uit ${n} ${n === 1 ? 'deel' : 'losse delen'}. Haal stukken weg die je niet wilt, knip een stuk weg met een kader of vrije lijn, of splits alles in losse objecten.`;
     g.append(t, row, ex);
     return g;
   }
@@ -2997,7 +3021,7 @@ const APP = /*__APP__*/{ standalone: false };
     const handle = e.target.closest('[data-handle]');
     if (edit.active && editItem() && !(spaceDown || e.button === 1)) {
       const it = editItem();
-      if (edit.tool === 'pick') { const k = pieceAt(it, p.x, p.y); if (k >= 0) pickPiece(it, k); return; }
+      if (edit.tool === 'pick') { const k = pieceAt(it, p.x, p.y); if (k >= 0) togglePiece(k); return; }
       drag = edit.tool === 'rect' ? { mode: 'erect', a: p, b: p } : { mode: 'lasso', pts: [[p.x, p.y]] };
       return;
     }
@@ -3031,17 +3055,11 @@ const APP = /*__APP__*/{ standalone: false };
         if (again && hitIt && hitIt.type === 'text') { editText(hitIt); return; }
         // objecten op elkaar: alles onder de muis, bovenste eerst
         const stack = itemsAt(e.clientX, e.clientY);
-        if (again && hitIt && hitIt.type === 'path') { startEdit(hitIt); return; }
-        // nog eens klikken op dezelfde plek (zonder slepen) kiest het object eronder; slepen verplaatst wat geselecteerd is
-        const cycle = stack.length > 1 && lastPick && Math.hypot(e.clientX - lastPick.x, e.clientY - lastPick.y) < 5 && stack.includes(lastPick.id) && isSelected(state.items.find((i) => i.id === lastPick.id) || {});
         if (e.altKey) selectItem(id, true);
-        else if (!cycle && !isSelected(hitIt)) selectItem(id);
+        else if (!isSelected(hitIt)) selectItem(id);
         snapshot();
-        drag = { mode: 'move', items: selection(), last: p, moved: false, cycle: cycle ? { stack, from: lastPick.id } : null };
-        if (!cycle) {
-          lastPick = { x: e.clientX, y: e.clientY, id: state.sel };
-          if (stack.length > 1 && Date.now() - stackHintAt > 20000) { stackHintAt = Date.now(); setTimeout(() => toast(`Hier liggen ${stack.length} objecten op elkaar. Klik nog eens op dezelfde plek om het object eronder te kiezen.`), 0); }
-        }
+        drag = { mode: 'move', items: selection(), last: p, moved: false, stack: stack.length > 1 ? { ids: stack, x: e.clientX, y: e.clientY } : null };
+        hidePicker();
       } else {
         // leeg vlak: selectiekader trekken (en een openstaande contour-instelling sluiten)
         if (!e.shiftKey) { state.sel = null; state.multi = []; if (contour.active) { contour.active = false; contour.preview = null; } }
@@ -3134,15 +3152,9 @@ const APP = /*__APP__*/{ standalone: false };
     }
     if (drag && drag.mode === 'move' && !drag.moved) {
       history.pop();
-      if (drag.cycle) {
-        const st = drag.cycle.stack;
-        const next = st[(st.indexOf(drag.cycle.from) + 1) % st.length];
-        selectItem(next, true);
-        lastPick = { ...lastPick, id: next };
-        const it = state.items.find((i) => i.id === next);
-        if (it) toast(`Geselecteerd: ${itemName(it)} (${st.indexOf(next) + 1} van ${st.length} op deze plek)`);
-      }
-    } else if (drag && drag.mode === 'move' && drag.moved) lastPick = null;
+      // klik op een plek met objecten op elkaar: knopje om er een te kiezen
+      if (drag.stack) { const st = drag.stack; setTimeout(() => showStackChip(st), 0); }
+    }
     if (drag && drag.mode === 'box') {
       const bx0 = Math.min(drag.a.x, drag.b.x), by0 = Math.min(drag.a.y, drag.b.y), bx1 = Math.max(drag.a.x, drag.b.x), by1 = Math.max(drag.a.y, drag.b.y);
       if (bx1 - bx0 > 0.5 || by1 - by0 > 0.5) {
@@ -3168,7 +3180,58 @@ const APP = /*__APP__*/{ standalone: false };
   });
 
   let lastClick = { id: null, t: 0 };
-  let lastPick = null, stackHintAt = 0;
+  // ---------- Objecten op elkaar: kiezen uit een lijst ----------
+  const picker = { el: null };
+  function hidePicker() { if (picker.el) { picker.el.remove(); picker.el = null; } }
+  function placeAt(box, cx, cy) {
+    const r = document.getElementById('stage').getBoundingClientRect();
+    box.style.left = Math.min(Math.max(8, cx - r.left + 10), r.width - 270) + 'px';
+    box.style.top = Math.min(Math.max(8, cy - r.top + 10), r.height - 60) + 'px';
+  }
+  function showStackChip(st) {
+    hidePicker();
+    const ids = st.ids.filter((id) => state.items.some((i) => i.id === id));
+    if (ids.length < 2) return;
+    const b = document.createElement('button'); b.type = 'button'; b.className = 'stackchip';
+    b.textContent = `Hier liggen ${ids.length} objecten op elkaar · kies…`;
+    b.addEventListener('pointerdown', (e) => e.stopPropagation());
+    b.addEventListener('click', (e) => { e.stopPropagation(); showStackList(ids, st.x, st.y); });
+    placeAt(b, st.x, st.y);
+    document.getElementById('stage').appendChild(b);
+    picker.el = b;
+  }
+  function showStackList(ids, cx, cy) {
+    hidePicker();
+    const box = document.createElement('div'); box.className = 'stacklist'; box.setAttribute('role', 'menu');
+    const h = document.createElement('div'); h.className = 'mlabel'; h.textContent = 'Kies een object (bovenste eerst)';
+    box.appendChild(h);
+    for (const id of ids) {
+      const it = state.items.find((i) => i.id === id); if (!it) continue;
+      const b = document.createElement('button'); b.type = 'button'; b.setAttribute('role', 'menuitem');
+      if (isSelected(it)) b.classList.add('cur');
+      b.innerHTML = `<span class="swatch" style="background:${ROLE[it.role].color}"></span><span class="nm"></span><small></small>`;
+      b.querySelector('.nm').textContent = itemName(it);
+      b.querySelector('small').textContent = ROLE[it.role].short + (it.group ? ' · groep' : '');
+      b.addEventListener('mouseenter', () => { state.flags = [id]; renderCanvasOnly(); });
+      b.addEventListener('mouseleave', () => { state.flags = []; renderCanvasOnly(); });
+      b.addEventListener('click', () => { state.flags = []; selectItem(id, true); hidePicker(); render(); });
+      box.appendChild(b);
+    }
+    box.addEventListener('pointerdown', (e) => e.stopPropagation());
+    placeAt(box, cx, cy);
+    document.getElementById('stage').appendChild(box);
+    picker.el = box;
+    box.querySelector('button')?.focus();
+  }
+  // rechtermuisknop: altijd de lijst van wat onder de muis ligt
+  canvas.addEventListener('contextmenu', (e) => {
+    e.preventDefault();
+    const ids = itemsAt(e.clientX, e.clientY);
+    if (!ids.length) return hidePicker();
+    showStackList(ids, e.clientX, e.clientY);
+  });
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && picker.el) { state.flags = []; hidePicker(); renderCanvasOnly(); } });
+  document.addEventListener('pointerdown', (e) => { if (picker.el && !picker.el.contains(e.target)) hidePicker(); }, true);
   // alle zichtbare objecten onder een schermpunt, bovenste eerst
   function itemsAt(cx, cy) {
     const ids = [];
@@ -3220,7 +3283,7 @@ const APP = /*__APP__*/{ standalone: false };
 
   // ---------- Gereedschap ----------
   const HINTS = {
-    select: 'Klik = selecteren, Shift+klik of kader slepen = meerdere, Ctrl+G = groeperen, Alt+klik = één onderdeel uit een groep. Samensmelten en Contour staan bovenaan de plaat en links in de balk. Spatie+slepen = schuiven.',
+    select: 'Klik = selecteren, Shift+klik of kader slepen = meerdere, Ctrl+G = groeperen, Alt+klik = één onderdeel uit een groep, rechtermuisknop = kies uit objecten op elkaar. Samensmelten en Contour staan bovenaan de plaat en links in de balk. Spatie+slepen = schuiven.',
     rect: 'Sleep op de plaat om een rechthoek te tekenen. Een klik maakt 40 × 20 mm.',
     ellipse: 'Sleep op de plaat om een ellips te tekenen; hou Shift ingedrukt voor een cirkel.',
     line: 'Sleep om een lijn te tekenen. Lijnen komen standaard op Lijn graveren: een open lijn snijdt niets los.',
@@ -3254,6 +3317,7 @@ const APP = /*__APP__*/{ standalone: false };
   document.addEventListener('keyup', (e) => { if (e.code === 'Space') { spaceDown = false; canvas.style.cursor = state.tool === 'select' ? 'default' : 'crosshair'; } });
   document.addEventListener('keydown', (e) => {
     const typing = /INPUT|SELECT|TEXTAREA/.test(document.activeElement?.tagName || '');
+    if (!typing && edit.active && (e.key === 'Delete' || e.key === 'Backspace')) { e.preventDefault(); e.stopImmediatePropagation(); if (edit.picked.size) applyPicked('remove'); else toast('Klik eerst de delen aan die weg moeten.'); return; }
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') { e.preventDefault(); FILES.saveFile(e.shiftKey); return; }
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'o') { e.preventDefault(); FILES.openFile(); return; }
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') { if (!typing) { e.preventDefault(); undo(); } return; }
