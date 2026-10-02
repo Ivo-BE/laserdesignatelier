@@ -3029,11 +3029,19 @@ const APP = /*__APP__*/{ standalone: false };
         lastClick = { id, t: now };
         const hitIt = state.items.find((i) => i.id === id);
         if (again && hitIt && hitIt.type === 'text') { editText(hitIt); return; }
+        // objecten op elkaar: alles onder de muis, bovenste eerst
+        const stack = itemsAt(e.clientX, e.clientY);
         if (again && hitIt && hitIt.type === 'path') { startEdit(hitIt); return; }
+        // nog eens klikken op dezelfde plek (zonder slepen) kiest het object eronder; slepen verplaatst wat geselecteerd is
+        const cycle = stack.length > 1 && lastPick && Math.hypot(e.clientX - lastPick.x, e.clientY - lastPick.y) < 5 && stack.includes(lastPick.id) && isSelected(state.items.find((i) => i.id === lastPick.id) || {});
         if (e.altKey) selectItem(id, true);
-        else if (!isSelected(hitIt)) selectItem(id);
+        else if (!cycle && !isSelected(hitIt)) selectItem(id);
         snapshot();
-        drag = { mode: 'move', items: selection(), last: p, moved: false };
+        drag = { mode: 'move', items: selection(), last: p, moved: false, cycle: cycle ? { stack, from: lastPick.id } : null };
+        if (!cycle) {
+          lastPick = { x: e.clientX, y: e.clientY, id: state.sel };
+          if (stack.length > 1 && Date.now() - stackHintAt > 20000) { stackHintAt = Date.now(); setTimeout(() => toast(`Hier liggen ${stack.length} objecten op elkaar. Klik nog eens op dezelfde plek om het object eronder te kiezen.`), 0); }
+        }
       } else {
         // leeg vlak: selectiekader trekken (en een openstaande contour-instelling sluiten)
         if (!e.shiftKey) { state.sel = null; state.multi = []; if (contour.active) { contour.active = false; contour.preview = null; } }
@@ -3124,7 +3132,17 @@ const APP = /*__APP__*/{ standalone: false };
       } else render();
       return;
     }
-    if (drag && drag.mode === 'move' && !drag.moved) history.pop();
+    if (drag && drag.mode === 'move' && !drag.moved) {
+      history.pop();
+      if (drag.cycle) {
+        const st = drag.cycle.stack;
+        const next = st[(st.indexOf(drag.cycle.from) + 1) % st.length];
+        selectItem(next, true);
+        lastPick = { ...lastPick, id: next };
+        const it = state.items.find((i) => i.id === next);
+        if (it) toast(`Geselecteerd: ${itemName(it)} (${st.indexOf(next) + 1} van ${st.length} op deze plek)`);
+      }
+    } else if (drag && drag.mode === 'move' && drag.moved) lastPick = null;
     if (drag && drag.mode === 'box') {
       const bx0 = Math.min(drag.a.x, drag.b.x), by0 = Math.min(drag.a.y, drag.b.y), bx1 = Math.max(drag.a.x, drag.b.x), by1 = Math.max(drag.a.y, drag.b.y);
       if (bx1 - bx0 > 0.5 || by1 - by0 > 0.5) {
@@ -3150,6 +3168,16 @@ const APP = /*__APP__*/{ standalone: false };
   });
 
   let lastClick = { id: null, t: 0 };
+  let lastPick = null, stackHintAt = 0;
+  // alle zichtbare objecten onder een schermpunt, bovenste eerst
+  function itemsAt(cx, cy) {
+    const ids = [];
+    for (const el of document.elementsFromPoint(cx, cy)) {
+      const g = el.closest && el.closest('#canvas .it');
+      if (g && !ids.includes(g.dataset.id)) ids.push(g.dataset.id);
+    }
+    return ids;
+  }
   let focusTextAfterUp = false;
   function focusTextField() {
     const t = document.getElementById('p_text');
