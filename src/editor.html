@@ -3055,8 +3055,10 @@ const APP = /*__APP__*/{ standalone: false };
         if (again && hitIt && hitIt.type === 'text') { editText(hitIt); return; }
         // objecten op elkaar: alles onder de muis, bovenste eerst
         const stack = itemsAt(e.clientX, e.clientY);
+        // ligt een geselecteerd object onder de muis (ook onder een ander), dan blijft de selectie staan: slepen verplaatst dat object
+        const selUnder = stack.some((sid) => isSelected(state.items.find((i) => i.id === sid) || {}));
         if (e.altKey) selectItem(id, true);
-        else if (!isSelected(hitIt)) selectItem(id);
+        else if (!isSelected(hitIt) && !selUnder) selectItem(id);
         snapshot();
         drag = { mode: 'move', items: selection(), last: p, moved: false, stack: stack.length > 1 ? { ids: stack, x: e.clientX, y: e.clientY } : null };
         hidePicker();
