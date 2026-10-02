@@ -20,8 +20,13 @@ Product van TripleSpark, verkocht via **Sparkgate** (jaarlicentie, 14 dagen proe
 - De laatst bekende licentie staat in `localStorage` (`lda:lic`); offline blijft de app werken tot `valid_until`.
 - Kopen: `https://www.sparkgate.be/kopen/laser-design-atelier`, beheren: `https://www.sparkgate.be/mijn?brand=laser-design-atelier`.
 
-## Ontwerpen bewaren
-In de browser (IndexedDB `laser-design-atelier`), automatisch. Gebruikers kunnen een ontwerp ook als `.json` bewaren en weer openen.
+## Ontwerpen bewaren (zoals LightBurn)
+- **Bestanden op de computer** (`.lda`, JSON): Bestand, Openen (Ctrl+O), Opslaan (Ctrl+S), Opslaan als (Ctrl+Shift+S), recente bestanden, slepen op de app.
+- Chrome en Edge gebruiken de File System Access API: na de eerste keer opslaan bewaart de app automatisch in hetzelfde bestand. De verwijzingen naar recente bestanden staan in IndexedDB (`handles`).
+- Safari en Firefox: opslaan = downloaden, openen = bestand kiezen.
+- Melding bij sluiten (`beforeunload`) en bij Nieuw of Openen als er niet-opgeslagen wijzigingen zijn.
+- Altijd ook een reservekopie in de browser (IndexedDB `projects` + `localStorage`), te openen via Bestand, Reservekopieën.
+- Niets op een server.
 
 ## Deploy (Vercel)
 1. Vercel → Add New Project → deze repo. Framework: Other. `vercel.json` regelt build (`node build.mjs`) en output (`dist`).

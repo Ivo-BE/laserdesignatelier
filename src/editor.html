@@ -54,6 +54,17 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .proj input { width: 220px; max-width: 40vw; font-weight: 500; }
 .savestate { font-size: 12px; color: var(--muted); white-space: nowrap; }
 .savestate.warn { color: var(--warn); }
+.menuwrap { position: relative; }
+.menu { position: absolute; top: calc(100% + 4px); left: 0; z-index: 30; min-width: 260px; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 8px 24px rgba(0,0,0,.14); padding: 5px; display: grid; }
+.menu button { display: flex; justify-content: space-between; gap: 16px; align-items: center; text-align: left; border: 0; background: none; color: var(--fg); font: inherit; padding: 7px 10px; border-radius: 5px; cursor: pointer; }
+.menu button:hover, .menu button:focus-visible { background: var(--bg); }
+.menu button:disabled { opacity: .45; cursor: default; }
+.menu kbd { font-family: var(--font-num); font-size: 11px; color: var(--muted); }
+.menu .msep { height: 1px; background: var(--line); margin: 4px 2px; }
+.menu .mlabel { font-size: 11px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); padding: 4px 10px 2px; }
+.menu .mempty { font-size: 12.5px; color: var(--muted); padding: 4px 10px 6px; }
+.menu .rfile small { color: var(--muted); font-size: 11.5px; }
+.savestate.dirty::before { content: "\25CF  "; color: var(--warn); }
 .plist { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; max-height: 55vh; overflow: auto; }
 .prow { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; align-items: center; padding: 8px 10px; border: 1px solid var(--line); border-radius: var(--r); background: var(--bg); }
 .prow.cur { border-color: var(--accent); }
@@ -269,7 +280,20 @@ input[type="range"] { width: 100%; accent-color: var(--accent); }
     <div class="spacer"></div>
     <div class="actions">
       <button class="btn" id="btnUndo" title="Ongedaan maken (Ctrl+Z)">Ongedaan</button>
-      <button class="btn" id="btnProjects">Mijn ontwerpen</button>
+      <div class="menuwrap">
+        <button class="btn" id="btnFile" aria-haspopup="menu" aria-expanded="false">Bestand</button>
+        <div class="menu" id="fileMenu" role="menu" hidden>
+          <button role="menuitem" type="button" data-f="new">Nieuw ontwerp</button>
+          <button role="menuitem" type="button" data-f="open">Openen…<kbd>Ctrl+O</kbd></button>
+          <button role="menuitem" type="button" data-f="save">Opslaan<kbd>Ctrl+S</kbd></button>
+          <button role="menuitem" type="button" data-f="saveas">Opslaan als…<kbd>Ctrl+Shift+S</kbd></button>
+          <div class="msep"></div>
+          <div class="mlabel">Recente bestanden</div>
+          <div id="recentList"></div>
+          <div class="msep"></div>
+          <button role="menuitem" type="button" data-f="backups">Reservekopieën in deze browser…</button>
+        </div>
+      </div>
       <button class="btn" id="btnPng">Preview</button>
       <button class="btn" id="btnCost">Tijd en kosten</button>
       <button class="btn" id="btnSvg">SVG</button>
@@ -392,18 +416,24 @@ input[type="range"] { width: 100%; accent-color: var(--accent); }
 <div class="overlay" id="projDlg" hidden role="dialog" aria-modal="true" aria-labelledby="pjTitle">
   <div class="pv" style="width:min(640px,100%)">
     <div class="pvbar">
-      <b id="pjTitle">Mijn ontwerpen</b>
+      <b id="pjTitle">Reservekopieën in deze browser</b>
       <div class="spacer"></div>
-      <button class="btn primary" id="pjNew">Nieuw ontwerp</button>
       <button class="btn" id="pjClose">Sluiten</button>
     </div>
     <ul class="plist" id="pjList"></ul>
-    <div class="row">
-      <button class="btn" id="pjExport">Huidig ontwerp als bestand bewaren (.json)</button>
-      <button class="btn" id="pjImport">Bestand openen</button>
-      <input id="fileOpen" type="file" accept=".json,application/json" hidden>
-    </div>
+    <input id="fileOpen" type="file" accept=".lda,.json,application/json" hidden>
     <p class="empty small" id="pjNote"></p>
+  </div>
+</div>
+<div class="overlay" id="askDlg" hidden role="dialog" aria-modal="true" aria-labelledby="akTitle">
+  <div class="pv" style="width:min(460px,100%)">
+    <div class="pvbar"><b id="akTitle">Wijzigingen opslaan?</b></div>
+    <p id="akText" style="margin:0"></p>
+    <div class="row" style="justify-content:flex-end">
+      <button class="btn" id="akCancel" type="button">Annuleren</button>
+      <button class="btn" id="akNo" type="button">Niet opslaan</button>
+      <button class="btn primary" id="akYes" type="button">Opslaan</button>
+    </div>
   </div>
 </div>
 <div class="overlay" id="shapeDlg" hidden role="dialog" aria-modal="true" aria-labelledby="shTitle">
@@ -3196,6 +3226,8 @@ const APP = /*__APP__*/{ standalone: false };
   document.addEventListener('keyup', (e) => { if (e.code === 'Space') { spaceDown = false; canvas.style.cursor = state.tool === 'select' ? 'default' : 'crosshair'; } });
   document.addEventListener('keydown', (e) => {
     const typing = /INPUT|SELECT|TEXTAREA/.test(document.activeElement?.tagName || '');
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') { e.preventDefault(); FILES.saveFile(e.shiftKey); return; }
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'o') { e.preventDefault(); FILES.openFile(); return; }
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') { if (!typing) { e.preventDefault(); undo(); } return; }
     const st = selected();
     if ((e.ctrlKey || e.metaKey) && st && st.type === 'text') {
@@ -3277,7 +3309,7 @@ const APP = /*__APP__*/{ standalone: false };
 
   async function save(filename, data) {
     // exportbestanden vragen een licentie (alleen in de verkoopversie); het eigen projectbestand niet
-    if (APP.standalone && !/\.json$/i.test(filename) && !LIC.valid()) return LIC.gate();
+    if (APP.standalone && !/\.(json|lda)$/i.test(filename) && !LIC.valid()) return LIC.gate();
     if (!downloads) return browserDownload(filename, data);
     try {
       const r = await downloads.save({ filename, data });
@@ -3787,7 +3819,7 @@ const APP = /*__APP__*/{ standalone: false };
   let db = null, userId = null;
   // Opslag in de browser (IndexedDB) met dezelfde aanroepen als de online opslag
   function localDb() {
-    const open = () => new Promise((res, rej) => { const r = indexedDB.open('laser-design-atelier', 1); r.onupgradeneeded = () => r.result.createObjectStore('projects'); r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); });
+    const open = () => new Promise((res, rej) => { const r = indexedDB.open('laser-design-atelier', 2); r.onupgradeneeded = () => { for (const n of ['projects', 'handles']) if (!r.result.objectStoreNames.contains(n)) r.result.createObjectStore(n); }; r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); });
     const tx = async (mode, fn) => { const d = await open(); return new Promise((res, rej) => { const t = d.transaction('projects', mode); const st = t.objectStore('projects'); let out; Promise.resolve(fn(st)).then((v) => { out = v; }); t.oncomplete = () => res(out); t.onerror = () => rej(t.error); }); };
     const all = () => tx('readonly', (st) => new Promise((res) => { const out = []; const c = st.openCursor(); c.onsuccess = () => { const cur = c.result; if (cur) { out.push({ id: cur.key, d: cur.value }); cur.continue(); } else res(out); }; }));
     const query = (lim) => ({ get: async () => { const rows = (await all()).sort((a, b) => (b.d.updatedAt || 0) - (a.d.updatedAt || 0)).slice(0, lim); return { empty: !rows.length, docs: rows.map((r) => ({ id: r.id, data: () => r.d })) }; } });
@@ -3821,16 +3853,17 @@ const APP = /*__APP__*/{ standalone: false };
     const json = JSON.stringify(data);
     if (json === lastSavedJSON) return;
     // altijd ook in deze browser, als vangnet
-    try { localStorage.setItem(LS_KEY, JSON.stringify({ id: projectId, ...data })); } catch { /* opslag geblokkeerd */ }
-    if (!db) { lastSavedJSON = json; setSaveState('Bewaard in deze browser', !db); return; }
+    try { localStorage.setItem(LS_KEY, JSON.stringify({ id: projectId, fileName: FILES.name(), fileClean: !FILES.dirty(), ...data })); } catch { /* opslag geblokkeerd */ }
+    if (APP.standalone) FILES.autosave();
+    if (!db) { lastSavedJSON = json; if (!APP.standalone) setSaveState('Bewaard in deze browser', !db); return; }
     if (!db.local && json.length > 240000) { setSaveState('Te groot om online te bewaren (foto\'s). Bewaard in deze browser; bewaar ook als bestand.', true); return; }
     setSaveState('Bewaren…');
     try {
       await projCol().doc(projectId).set({ ...data, updatedAt: Date.now() });
       lastSavedJSON = json;
-      setSaveState((db.local ? 'Bewaard in deze browser ' : 'Bewaard ') + hhmm(Date.now()));
+      if (APP.standalone) FILES.status(); else setSaveState((db.local ? 'Bewaard in deze browser ' : 'Bewaard ') + hhmm(Date.now()));
     } catch (err) {
-      setSaveState('Online bewaren lukte niet; bewaard in deze browser.', true);
+      if (APP.standalone) FILES.status(); else setSaveState('Online bewaren lukte niet; bewaard in deze browser.', true);
     }
   }
   function loadProject(d, id) {
@@ -3868,7 +3901,7 @@ const APP = /*__APP__*/{ standalone: false };
     const ul = document.getElementById('pjList');
     ul.replaceChildren();
     document.getElementById('pjNote').textContent = db && db.local
-      ? 'Je ontwerpen worden automatisch in deze browser bewaard, op dit toestel. Bewaar belangrijke ontwerpen ook als bestand (.json): wis je je browsergegevens, dan zijn ze weg.'
+      ? 'Terwijl je werkt, houdt de app een reservekopie bij in deze browser. Ze zijn bedoeld als vangnet; je echte ontwerpen bewaar je met Bestand, Opslaan op je computer. Wis je je browsergegevens, dan zijn deze kopieën weg.'
       : db
       ? 'Je ontwerpen worden automatisch online bewaard en zijn alleen voor jou zichtbaar.'
       : 'Online bewaren is in deze weergave niet beschikbaar. Je huidige ontwerp wordt in deze browser bewaard; bewaar belangrijke ontwerpen ook als bestand.';
@@ -3892,13 +3925,13 @@ const APP = /*__APP__*/{ standalone: false };
         const acts = document.createElement('div'); acts.className = 'pa';
         const open = document.createElement('button'); open.className = 'btn'; open.type = 'button'; open.textContent = 'Openen';
         open.disabled = doc.id === projectId;
-        open.addEventListener('click', () => { loadProject(d, doc.id); dlg.hidden = true; toast(`${d.name || 'Ontwerp'} geopend`); });
+        open.addEventListener('click', async () => { if (!(await FILES.confirmDiscard())) return; loadProject(d, doc.id); FILES.detach(d.fileName); dlg.hidden = true; toast(`Reservekopie van ${d.name || 'ontwerp'} geopend. Sla ze op als bestand met Ctrl+S.`); });
         const del = document.createElement('button'); del.className = 'btn danger'; del.type = 'button'; del.textContent = 'Verwijderen';
         del.addEventListener('click', async () => {
           if (del.dataset.confirm !== '1') { del.dataset.confirm = '1'; del.textContent = 'Zeker?'; setTimeout(() => { del.dataset.confirm = ''; del.textContent = 'Verwijderen'; }, 3000); return; }
           try {
             await projCol().doc(doc.id).delete();
-            if (doc.id === projectId) newProject();
+            if (doc.id === projectId) { newProject(); FILES.detach(); }
             showProjects();
           } catch { toast('Verwijderen lukte niet.'); }
         });
@@ -3908,26 +3941,211 @@ const APP = /*__APP__*/{ standalone: false };
       }
     } catch { const li = document.createElement('li'); li.className = 'empty'; li.textContent = 'De lijst kon niet geladen worden.'; ul.appendChild(li); }
   }
-  document.getElementById('btnProjects').addEventListener('click', showProjects);
   document.getElementById('pjClose').addEventListener('click', () => { document.getElementById('projDlg').hidden = true; });
   document.getElementById('projDlg').addEventListener('click', (e) => { if (e.target.id === 'projDlg') e.currentTarget.hidden = true; });
-  document.getElementById('pjNew').addEventListener('click', () => { newProject(); document.getElementById('projDlg').hidden = true; toast('Nieuw ontwerp gestart. Het vorige is bewaard.'); });
-  document.getElementById('pjExport').addEventListener('click', () => save(`${(projectName || 'ontwerp').replace(/[^\w\- ]+/g, '').trim() || 'ontwerp'}_${stamp()}.json`, JSON.stringify(projectData(), null, 1)));
-  document.getElementById('pjImport').addEventListener('click', () => document.getElementById('fileOpen').click());
-  document.getElementById('fileOpen').addEventListener('change', async (e) => {
-    const f = e.target.files[0]; e.target.value = '';
-    if (!f) return;
-    try {
-      const d = JSON.parse(await f.text());
-      if (!['laser-design-atelier', 'lasercut-studio'].includes(d.app) || !Array.isArray(d.items)) throw new Error();
+  // ---------- Bestanden op de computer (zoals LightBurn) ----------
+  // Chrome en Edge: echte bestanden openen en opslaan (File System Access); daarna automatisch in hetzelfde bestand.
+  // Andere browsers: opslaan = downloaden, openen = bestand kiezen. De browser houdt altijd een reservekopie bij.
+  const FILES = (() => {
+    const EXT = APP.standalone ? 'lda' : 'json';
+    const TYPES = [{ description: 'Laser Design Atelier-ontwerp', accept: { 'application/json': ['.lda', '.json'] } }];
+    const $ = (id) => document.getElementById(id);
+    let handle = null, fname = '', savedJSON = null, savedAt = 0, writing = false, autoTimer = null, pending = null;
+    const cur = () => JSON.stringify(projectData());
+    const dirty = () => savedJSON === null ? true : cur() !== savedJSON;
+    const safe = () => ((projectName || 'ontwerp').replace(/[\\/:*?"<>|]+/g, '').trim() || 'ontwerp');
+    async function hdb() { const d = await new Promise((res, rej) => { const r = indexedDB.open('laser-design-atelier', 2); r.onupgradeneeded = () => { for (const n of ['projects', 'handles']) if (!r.result.objectStoreNames.contains(n)) r.result.createObjectStore(n); }; r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); }); return d; }
+    async function recents() {
+      try { const d = await hdb(); return await new Promise((res) => { const out = []; const c = d.transaction('handles').objectStore('handles').openCursor(); c.onsuccess = () => { const k = c.result; if (k) { out.push(k.value); k.continue(); } else res(out.sort((a, b) => b.at - a.at)); }; c.onerror = () => res([]); }); } catch { return []; }
+    }
+    async function remember(h) {
+      try {
+        const list = await recents();
+        let key = null;
+        for (const r of list) if (await r.handle.isSameEntry(h)) key = r.key;
+        key = key || 'f' + Date.now().toString(36);
+        const d = await hdb();
+        const st = d.transaction('handles', 'readwrite').objectStore('handles');
+        st.put({ key, handle: h, name: h.name, at: Date.now() }, key);
+        // hoogstens 8 onthouden
+        for (const r of list.filter((x) => x.key !== key).slice(7)) st.delete(r.key);
+        try { localStorage.setItem('lda:lastfile', key); } catch { /* */ }
+      } catch { /* geen opslag: dan geen recente lijst */ }
+    }
+    async function writeTo(h, json) { const w = await h.createWritable(); await w.write(json); await w.close(); }
+    function title() { document.title = `${dirty() ? '• ' : ''}${fname || projectName || 'Naamloos'} – Laser Design Atelier`; }
+    function status() {
+      if (!APP.standalone) return;
+      const el = $('saveState'); const d = dirty();
+      el.classList.toggle('dirty', d && !!fname);
+      if (handle && !d) setSaveState(`Opgeslagen in ${fname} · ${hhmm(savedAt)}`);
+      else if (handle && d) setSaveState(writing ? `Opslaan in ${fname}…` : `${fname}: nog niet opgeslagen`);
+      else if (fname && !d) setSaveState(`Opgeslagen als ${fname} · ${hhmm(savedAt)}`);
+      else if (fname && d) setSaveState(`${fname}: wijzigingen niet opgeslagen (Ctrl+S)`, true);
+      else if (d && savedJSON !== null) setSaveState('Nog niet opgeslagen als bestand (Ctrl+S)', true);
+      else if (d) setSaveState('Nog niet opgeslagen als bestand (Ctrl+S)', true);
+      else setSaveState('');
+      title();
+    }
+    function mark(json) {
+      savedJSON = json; savedAt = Date.now(); status();
+      // reservekopie weet dat ze gelijk is aan het bestand (geen melding na herladen)
+      try { const d = JSON.parse(localStorage.getItem(LS_KEY) || 'null'); if (d) { d.fileName = fname; d.fileClean = true; localStorage.setItem(LS_KEY, JSON.stringify(d)); } } catch { /* */ }
+    }
+    async function saveFile(as) {
+      const json = cur();
+      if (handle && !as) {
+        try { writing = true; status(); await writeTo(handle, json); writing = false; mark(json); toast(`Opgeslagen in ${fname}`); return true; }
+        catch { writing = false; handle = null; toast('Opslaan in het bestand lukte niet (geen toestemming?). Kies waar je het wilt bewaren.'); }
+      }
+      // na herladen: hetzelfde bestand opnieuw gebruiken (de browser vraagt één keer toestemming)
+      if (!as && !handle && pending) {
+        try {
+          if ((await pending.requestPermission({ mode: 'readwrite' })) === 'granted') {
+            await writeTo(pending, json); handle = pending; fname = pending.name; pending = null; remember(handle); mark(json); toast(`Opgeslagen in ${fname}`); return true;
+          }
+        } catch { /* dan gewoon kiezen */ }
+        pending = null;
+      }
+      if (window.showSaveFilePicker) {
+        try {
+          const h = await window.showSaveFilePicker({ suggestedName: `${safe()}.${EXT}`, types: TYPES });
+          await writeTo(h, json); handle = h; fname = h.name; remember(h); mark(json); toast(`Opgeslagen in ${fname}`); return true;
+        } catch (e) { if (e && e.name === 'AbortError') return false; /* niet toegelaten (bv. in een ingesloten venster): downloaden */ }
+      }
+      const name = `${safe()}.${EXT}`;
+      await save(name, json);
+      fname = name; handle = null; mark(json);
+      return true;
+    }
+    async function autosave() {
+      if (!handle || writing) return;
+      clearTimeout(autoTimer);
+      autoTimer = setTimeout(async () => {
+        const json = cur();
+        if (json === savedJSON) return status();
+        try { writing = true; status(); await writeTo(handle, json); writing = false; mark(json); }
+        catch { writing = false; handle = null; status(); toast('Automatisch opslaan in het bestand lukte niet. Druk op Ctrl+S om opnieuw te kiezen.'); }
+      }, 1500);
+      status();
+    }
+    function ask(text) {
+      return new Promise((res) => {
+        $('akText').textContent = text; $('askDlg').hidden = false; $('akYes').focus();
+        const done = (v) => { $('askDlg').hidden = true; ['akYes', 'akNo', 'akCancel'].forEach((id) => { $(id).onclick = null; }); res(v); };
+        $('akYes').onclick = () => done('save'); $('akNo').onclick = () => done('discard'); $('akCancel').onclick = () => done('cancel');
+      });
+    }
+    // true = mag verder (opgeslagen of bewust weggegooid)
+    async function confirmDiscard() {
+      if (!APP.standalone || !dirty()) return true;
+      const a = await ask(`Je wijzigingen in "${fname || projectName || 'dit ontwerp'}" zijn nog niet opgeslagen als bestand. Wil je ze eerst opslaan?`);
+      if (a === 'cancel') return false;
+      if (a === 'save') return await saveFile(false);
+      return true;
+    }
+    function parse(text) {
+      const d = JSON.parse(text);
+      if (!['laser-design-atelier', 'lasercut-studio'].includes(d.app) || !Array.isArray(d.items)) throw new Error('geen ontwerp');
+      return d;
+    }
+    async function loadFile(file, h) {
+      let d;
+      try { d = parse(await file.text()); } catch { return toast('Dit is geen Laser Design Atelier-ontwerp (.lda of .json).'); }
       await saveNow();
-      loadProject({ ...d, name: d.name || f.name.replace(/\.json$/i, '') }, newId());
-      lastSavedJSON = '';
-      scheduleSave();
-      document.getElementById('projDlg').hidden = true;
-      toast('Bestand geopend als nieuw ontwerp');
-    } catch { toast('Dit is geen Laser Design Atelier-projectbestand (.json).'); }
-  });
+      loadProject({ ...d, name: d.name || file.name.replace(/\.(lda|json)$/i, '') }, newId());
+      handle = h || null; fname = file.name; pending = null;
+      if (h) remember(h);
+      lastSavedJSON = ''; scheduleSave();
+      mark(cur());
+      toast(`${file.name} geopend`);
+    }
+    async function openFile() {
+      if (!(await confirmDiscard())) return;
+      if (window.showOpenFilePicker) {
+        try { const [h] = await window.showOpenFilePicker({ types: TYPES, multiple: false }); return loadFile(await h.getFile(), h); }
+        catch (e) { if (e && e.name === 'AbortError') return; }
+      }
+      $('fileOpen').click();
+    }
+    async function openRecent(r) {
+      if (!(await confirmDiscard())) return;
+      try {
+        if ((await r.handle.queryPermission({ mode: 'readwrite' })) !== 'granted' && (await r.handle.requestPermission({ mode: 'readwrite' })) !== 'granted') return toast('Zonder toestemming kan de app het bestand niet openen.');
+        await loadFile(await r.handle.getFile(), r.handle);
+      } catch { toast(`${r.name} is niet meer te vinden. Misschien is het verplaatst of verwijderd; open het via Openen.`); }
+    }
+    function newDesign() {
+      newProject(); handle = null; fname = ''; pending = null; mark(cur());
+    }
+    async function renderMenu() {
+      const box = $('recentList'); box.replaceChildren();
+      const list = window.showOpenFilePicker ? await recents() : [];
+      if (!list.length) { const p = document.createElement('div'); p.className = 'mempty'; p.textContent = window.showOpenFilePicker ? 'Nog geen bestanden geopend of opgeslagen.' : 'In deze browser kan de app geen lijst bijhouden. Gebruik Openen.'; box.appendChild(p); return; }
+      for (const r of list.slice(0, 6)) {
+        const b = document.createElement('button'); b.type = 'button'; b.className = 'rfile'; b.setAttribute('role', 'menuitem');
+        b.append(r.name); const sm = document.createElement('small'); sm.textContent = new Date(r.at).toLocaleDateString('nl-BE', { day: 'numeric', month: 'short' }); b.appendChild(sm);
+        b.addEventListener('click', () => { closeMenu(); openRecent(r); });
+        box.appendChild(b);
+      }
+    }
+    function closeMenu() { $('fileMenu').hidden = true; $('btnFile').setAttribute('aria-expanded', 'false'); }
+    function init() {
+      if (/Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent)) document.querySelectorAll('#fileMenu kbd').forEach((k) => { k.textContent = k.textContent.replace('Ctrl+', '\u2318').replace('Shift+', '\u21E7'); });
+      $('btnFile').addEventListener('click', async (e) => {
+        e.stopPropagation();
+        const m = $('fileMenu');
+        if (!m.hidden) return closeMenu();
+        await renderMenu(); m.hidden = false; $('btnFile').setAttribute('aria-expanded', 'true');
+      });
+      document.addEventListener('click', (e) => { if (!$('fileMenu').hidden && !e.target.closest('.menuwrap')) closeMenu(); });
+      $('fileMenu').addEventListener('click', (e) => {
+        const b = e.target.closest('[data-f]'); if (!b) return;
+        closeMenu();
+        const f = b.dataset.f;
+        if (f === 'new') confirmDiscard().then((ok) => { if (ok) { newDesign(); toast('Nieuw ontwerp. Sla het op met Ctrl+S.'); } });
+        if (f === 'open') openFile();
+        if (f === 'save') saveFile(false);
+        if (f === 'saveas') saveFile(true);
+        if (f === 'backups') showProjects();
+      });
+      $('fileOpen').addEventListener('change', async (e) => { const f = e.target.files[0]; e.target.value = ''; if (f) loadFile(f, null); });
+      // bestand op de app slepen
+      document.addEventListener('dragover', (e) => { if ([...(e.dataTransfer?.items || [])].some((i) => i.kind === 'file')) e.preventDefault(); });
+      document.addEventListener('drop', async (e) => {
+        const it = [...(e.dataTransfer?.items || [])].find((i) => i.kind === 'file');
+        if (!it) return;
+        const file = it.getAsFile();
+        if (!file || !/\.(lda|json)$/i.test(file.name)) return;
+        e.preventDefault();
+        let h = null;
+        try { if (it.getAsFileSystemHandle) { const fh = await it.getAsFileSystemHandle(); if (fh && fh.kind === 'file') h = fh; } } catch { /* */ }
+        if (!(await confirmDiscard())) return;
+        loadFile(file, h);
+      });
+      // melding bij sluiten, zoals LightBurn
+      window.addEventListener('beforeunload', (e) => { if (APP.standalone && dirty()) { e.preventDefault(); e.returnValue = ''; } });
+    }
+    // bij opstarten: bestand van de vorige keer (toestemming volgt bij de eerste Ctrl+S)
+    async function restore(lastName, isSample, clean) {
+      if (isSample) { mark(cur()); return; }
+      fname = lastName || '';
+      savedJSON = clean ? cur() : null;
+      savedAt = Date.now();
+      try {
+        const key = localStorage.getItem('lda:lastfile');
+        if (key && lastName) { const r = (await recents()).find((x) => x.key === key && x.name === lastName); if (r) pending = r.handle; }
+      } catch { /* */ }
+      status();
+    }
+    return {
+      init, status, autosave, confirmDiscard, saveFile, openFile, restore,
+      name: () => fname,
+      detach: (n) => { handle = null; fname = n || ''; pending = null; savedJSON = null; status(); },
+      dirty,
+    };
+  })();
+
   function projectJSON() { return JSON.stringify(projectData(), null, 1); }
 
   document.getElementById('btnUndo').addEventListener('click', undo);
@@ -3943,6 +4161,7 @@ const APP = /*__APP__*/{ standalone: false };
 
   // ---------- Start ----------
   LIC.init();
+  FILES.init();
   // 1) direct: concept uit deze browser of het voorbeeld; 2) zodra online opslag beschikbaar is: laatste online ontwerp
   setTool('select');
   let restored = false;
@@ -3952,6 +4171,7 @@ const APP = /*__APP__*/{ standalone: false };
   } catch { /* geen browseropslag */ }
   if (!restored) { sample(); projectId = newId(); projectName = 'Voorbeeld naambord'; document.getElementById('projName').value = projectName; syncSheetInputs(); fit(); }
   setSaveState(restored ? 'Hersteld uit deze browser' : '');
+  { let last = {}; try { last = JSON.parse(localStorage.getItem(LS_KEY) || '{}') || {}; } catch { /* */ } FILES.restore(last.fileName || '', !restored, !!last.fileClean && !!last.fileName); }
   booted = true;
   // houd de toestand vast als de pagina tijdens het werken een nieuwe versie krijgt
   window.claude?.hot?.snapshot?.(() => ({ projectId, projectName, ...projectData() }));
