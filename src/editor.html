@@ -247,6 +247,9 @@ table.layers td.num { font-family: var(--font-num); font-variant-numeric: tabula
 .radio label { display: flex; gap: 8px; align-items: center; cursor: pointer; }
 .solutions { display: grid; gap: 6px; }
 .layrow { display: grid; grid-template-columns: 14px minmax(0, 1fr) auto; gap: 8px; align-items: center; }
+.stackrow { display: grid; grid-template-columns: 14px minmax(0, 1fr) auto auto auto; gap: 6px; align-items: center; font-size: 13px; }
+.stackrow small { color: var(--muted); font-size: 11px; }
+.btn.sm { padding: 2px 8px; }
 .layrow small { color: var(--muted); font-size: 11px; white-space: nowrap; }
 input[type="range"] { width: 100%; accent-color: var(--accent); }
 .check { display: flex; align-items: center; gap: 6px; font-size: 13px; cursor: pointer; }
@@ -953,7 +956,9 @@ const APP = /*__APP__*/{ standalone: false };
 
   // ---------- Afbeelding naar vector ----------
   const trace = { active: false, src: null, w: 0, h: 0, dataUrl: '', mode: 'bw', threshold: 128, invert: false, colors: 3,
-    detail: 8, smooth: 1, widthMm: 80, x: 10, y: 10, skipBg: true, roles: [], layers: [], busy: false, name: '' };
+    detail: 8, smooth: 1, widthMm: 80, x: 10, y: 10, skipBg: true, roles: [], layers: [], busy: false, name: '',
+    // gestapelde lagen
+    stackOrder: [], stackFrame: true, stackBorder: 6, stackMin: 0.6, stackGap: 5, stack: [] };
   document.getElementById('btnTrace').addEventListener('click', () => document.getElementById('fileTrace').click());
   document.getElementById('fileTrace').addEventListener('change', (e) => {
     const f = e.target.files[0]; e.target.value = '';
@@ -1009,6 +1014,7 @@ const APP = /*__APP__*/{ standalone: false };
         } else {
           Object.assign(opts, { colorsampling: 2, numberofcolors: trace.colors, colorquantcycles: 3 });
         }
+        if (trace.mode === 'stack') Object.assign(opts, { pathomit: Math.max(2, Math.round(trace.detail / 2)) });
         const td = ImageTracer.imagedataToTracedata(imgd, opts);
         const k = trace.widthMm / w;
         const layers = td.layers.map((paths, li) => {
@@ -1044,10 +1050,84 @@ const APP = /*__APP__*/{ standalone: false };
           l.role = trace.roles[i] || (rank === 0 ? 'vul' : rank === 1 ? 'vul2' : 'score');
         });
         trace.layers = layers;
-      } catch (err) { trace.layers = []; toast('Omzetten lukte niet met deze instellingen.'); }
+        if (trace.mode === 'stack') {
+          // volgorde onder -> boven: lichtste onderaan (dat is de volle onderplaat), donkerste bovenaan
+          if (trace.stackOrder.length !== layers.length) trace.stackOrder = layers.map((l, i) => i).sort((a, b) => layers[b].lum - layers[a].lum);
+          trace.stack = buildStack();
+        }
+      } catch (err) { trace.layers = []; trace.stack = []; toast('Omzetten lukte niet met deze instellingen.'); }
       trace.busy = false;
       render();
     }, 20);
+  }
+  // ---------- Gestapelde lagen: elke kleur een eigen plaat, op elkaar gelijmd ----------
+  // Laag i (van onder) = alle kleurvlakken van laag i en hoger samen; de onderste laag is de volle plaat.
+  // Met kader: elke laag krijgt dezelfde rand, zodat je ze precies op elkaar legt en alles één stuk blijft.
+  function buildStack() {
+    if (!window.ClipperLib) return [];
+    const SC = 1000, C = ClipperLib;
+    const W = trace.widthMm, H = trace.widthMm * trace.h / trace.w, X = trace.x, Y = trace.y;
+    const toPolys = (sps) => sps.map((sp) => flattenSubpath(sp, 0.08).map((q) => ({ X: Math.round(q[0] * SC), Y: Math.round(q[1] * SC) }))).filter((p) => p.length > 2);
+    const boolop = (type, a, b, fa = C.PolyFillType.pftNonZero, fb = C.PolyFillType.pftNonZero) => { const c = new C.Clipper(); c.AddPaths(a, C.PolyType.ptSubject, true); if (b) c.AddPaths(b, C.PolyType.ptClip, true); const out = new C.Paths(); c.Execute(type, out, fa, fb); return out; };
+    const offset = (paths, d) => { const o = new C.ClipperOffset(2, 0.05 * SC); o.AddPaths(paths, C.JoinType.jtRound, C.EndType.etClosedPolygon); const out = new C.Paths(); o.Execute(out, d * SC); return out; };
+    const rect = (x0, y0, x1, y1) => [[{ X: x0 * SC, Y: y0 * SC }, { X: x1 * SC, Y: y0 * SC }, { X: x1 * SC, Y: y1 * SC }, { X: x0 * SC, Y: y1 * SC }].map((p) => ({ X: Math.round(p.X), Y: Math.round(p.Y) }))];
+    const inner = rect(X, Y, X + W, Y + H);
+    const b = trace.stackFrame ? trace.stackBorder : 0;
+    const outer = rect(X - b, Y - b, X + W + b, Y + H + b);
+    const regions = trace.layers.map((l) => boolop(C.ClipType.ctUnion, toPolys(l.subpaths), null, C.PolyFillType.pftEvenOdd));
+    const order = trace.stackOrder;
+    const out = [];
+    let acc = null;
+    // van boven naar onder optellen
+    for (let k = order.length - 1; k >= 0; k--) {
+      const r = regions[order[k]];
+      acc = acc ? boolop(C.ClipType.ctUnion, acc, r) : r;
+      let piece = k === 0 ? inner : boolop(C.ClipType.ctIntersection, acc, inner);
+      // te fijne slierten weg: kleiner dan 'kleinste detail' verdwijnt
+      if (k > 0 && trace.stackMin > 0) { const hr = trace.stackMin / 2; piece = offset(offset(piece, -hr), hr); piece = boolop(C.ClipType.ctIntersection, piece, inner); }
+      if (b > 0) piece = boolop(C.ClipType.ctUnion, piece, boolop(C.ClipType.ctDifference, outer, inner));
+      piece = C.Clipper.CleanPolygons(piece, 0.02 * SC);
+      const subpaths = piece.filter((p) => p.length > 2).map((p) => ({ start: [p[0].X / SC, p[0].Y / SC], segs: p.slice(1).map((q) => ({ t: 'L', p: [q.X / SC, q.Y / SC] })), closed: true }));
+      out[k] = { color: trace.layers[order[k]].color, subpaths, pieces: countOuter(piece) };
+    }
+    return out;
+  }
+  function countOuter(paths) { return paths.filter((p) => ClipperLib.Clipper.Orientation(p)).length; }
+  function applyStack() {
+    const st = trace.stack;
+    if (!st.length) return;
+    const b = trace.stackFrame ? trace.stackBorder : 0;
+    const W = trace.widthMm + 2 * b, H = trace.widthMm * trace.h / trace.w + 2 * b;
+    const gap = trace.stackGap;
+    snapshot();
+    // lagen naast elkaar op de plaat, zo nodig in meer rijen; de plaat groeit mee als het niet past
+    // onder wat er al op de plaat staat, zodat niets overlapt
+    const others = state.items.filter((i) => !isHidden(i));
+    const y0 = others.length ? Math.ceil(selBBox(others).y + selBBox(others).h + gap) : 2;
+    const perRow = Math.max(1, Math.floor((state.sheet.w - 4 + gap) / (W + gap)));
+    const rows = Math.ceil(st.length / perRow);
+    const needW = Math.min(st.length, perRow) * (W + gap) - gap + 4, needH = y0 + rows * (H + gap) - gap + 2;
+    let grown = false;
+    if (needW > state.sheet.w || needH > state.sheet.h) { state.sheet = { w: Math.ceil(Math.max(state.sheet.w, needW)), h: Math.ceil(Math.max(state.sheet.h, needH)) }; grown = true; syncSheetInputs(); }
+    const made = [];
+    st.forEach((L, k) => {
+      const col = k % perRow, row = Math.floor(k / perRow);
+      const dx = 2 + col * (W + gap) - (trace.x - b), dy = y0 + row * (H + gap) - (trace.y - b);
+      const T = (q) => [q[0] + dx, q[1] + dy];
+      const g = newGid();
+      const piece = { id: nid(), role: 'buiten', type: 'path', evenodd: true, group: g, name: `Laag ${k + 1}${k === 0 ? ' (onderste)' : k === st.length - 1 ? ' (bovenste)' : ''}`, layerColor: L.color, subpaths: mapSubpaths(L.subpaths, T) };
+      made.push(piece);
+      // laagnummer: in het kader gegraveerd, anders als hulplijn erboven
+      const label = b >= 3
+        ? { id: nid(), role: 'score', type: 'text', group: g, x: 2 + col * (W + gap) + b * 0.5, y: y0 + row * (H + gap) + b * 0.78, text: String(k + 1), font: 'sans', bold: true, italic: false, size: Math.min(4, b * 0.55), anchor: 'start', spacing: 0, lineHeight: 1.6 }
+        : { id: nid(), role: 'hulp', type: 'text', group: g, x: 2 + col * (W + gap), y: y0 + row * (H + gap) - 1.5, text: `Laag ${k + 1}`, font: 'sans', bold: false, italic: false, size: 3, anchor: 'start', spacing: 0, lineHeight: 1.6 };
+      made.push(label);
+    });
+    state.items.push(...made);
+    state.sel = made[0].id; state.multi = made.slice(1).map((m) => m.id);
+    trace.active = false; trace.src = null; trace.layers = []; trace.stack = [];
+    fit();
+    toast(`${st.length} lagen geplaatst, elk als buitenrand. Snijd elke laag uit een eigen kleur of laat ze apart beitsen, en lijm ze in volgorde 1 (onderaan) tot ${st.length} op elkaar.` + (grown ? ` De plaat is vergroot tot ${state.sheet.w} × ${state.sheet.h} mm.` : ''));
   }
   function traceOutputLayers() { return trace.layers.filter((l) => !(trace.skipBg && l.bg) && l.role !== 'skip'); }
   function applyTrace() {
@@ -1068,10 +1148,10 @@ const APP = /*__APP__*/{ standalone: false };
     head.innerHTML = '<span class="kind">Functie</span><span class="name">Afbeelding omzetten naar vector</span><span class="explain">Het werkt het best met logo\'s, tekeningen en silhouetten met duidelijke vlakken. Foto\'s graveer je beter als foto (knop erboven).</span>';
     const wrap = document.createElement('div'); wrap.style.display = 'grid'; wrap.style.gap = '12px';
     const seg = document.createElement('div'); seg.className = 'seg'; seg.setAttribute('role', 'group');
-    for (const [v, t] of [['bw', 'Zwart-wit'], ['color', 'Kleuren']]) {
+    for (const [v, t] of [['bw', 'Zwart-wit'], ['color', 'Kleuren'], ['stack', 'Lagen stapelen']]) {
       const b = document.createElement('button'); b.type = 'button'; b.className = 'segbtn'; b.textContent = t;
       b.setAttribute('aria-pressed', String(trace.mode === v));
-      b.addEventListener('click', () => { trace.mode = v; trace.roles = []; runTrace(); });
+      b.addEventListener('click', () => { trace.mode = v; trace.roles = []; trace.stackOrder = []; if (v === 'stack' && trace.colors < 4) trace.colors = 4; runTrace(); });
       seg.appendChild(b);
     }
     const slider = (id, label, min, max, step, get, set, hint) => {
@@ -1091,8 +1171,12 @@ const APP = /*__APP__*/{ standalone: false };
       cb.addEventListener('change', () => { trace.invert = cb.checked; runTrace(); });
       inv.append(cb, document.createTextNode(' Omkeren (lichte delen worden de vorm)'));
       ctrls.append(inv);
-    } else {
+    } else if (trace.mode === 'color') {
       ctrls.append(slider('tr_col', 'Aantal kleuren', 2, 8, 1, () => trace.colors, (v) => { trace.colors = v; trace.roles = []; }));
+    } else {
+      const ex = document.createElement('p'); ex.className = 'explain';
+      ex.textContent = 'Elke kleur wordt een eigen laag die je apart uitsnijdt, bv. uit hout in verschillende tinten of uit gekleurd papier. Daarna lijm je ze op elkaar: de onderste laag is de volle plaat, elke laag erboven is iets kleiner. Werkt het best met een kleurenafbeelding met duidelijke vlakken.';
+      ctrls.append(ex, slider('tr_col', 'Aantal lagen (kleuren)', 2, 8, 1, () => trace.colors, (v) => { trace.colors = v; trace.stackOrder = []; }));
     }
     ctrls.append(
       slider('tr_det', 'Kleine vlekjes weglaten', 0, 64, 1, () => trace.detail, (v) => { trace.detail = v; }),
@@ -1104,6 +1188,7 @@ const APP = /*__APP__*/{ standalone: false };
       numField('Vanaf links (mm)', { id: 'tr_x', get: () => trace.x, set: (v) => { trace.x = v; scheduleTrace(); } }, trace, 1),
       numField('Vanaf boven (mm)', { id: 'tr_y', get: () => trace.y, set: (v) => { trace.y = v; scheduleTrace(); } }, trace, 1),
     ]);
+    if (trace.mode === 'stack') return renderStackPanel(wrap, seg, ctrls, size);
     // per kleurvlak een bewerking
     const lg = document.createElement('div'); lg.className = 'group';
     const lt = document.createElement('div'); lt.className = 'gl'; lt.textContent = trace.mode === 'bw' ? 'Wat doet de laser met de vorm?' : 'Wat doet de laser met elke kleur?';
@@ -1137,6 +1222,54 @@ const APP = /*__APP__*/{ standalone: false };
     no.addEventListener('click', cancelTrace);
     row.append(ok, no);
     wrap.append(seg, ctrls, size, lg, st, row);
+    props.appendChild(wrap);
+  }
+
+  function renderStackPanel(wrap, seg, ctrls, size) {
+    const lg = document.createElement('div'); lg.className = 'group';
+    const lt = document.createElement('div'); lt.className = 'gl'; lt.textContent = 'Volgorde van de lagen (bovenste eerst)';
+    lg.appendChild(lt);
+    if (trace.busy) { const b = document.createElement('div'); b.className = 'cstat'; b.textContent = 'Bezig met omzetten…'; lg.appendChild(b); }
+    const n = trace.stackOrder.length;
+    for (let k = n - 1; k >= 0; k--) {
+      const li = trace.stackOrder[k], L = trace.layers[li], S = trace.stack[k];
+      if (!L) continue;
+      const row = document.createElement('div'); row.className = 'stackrow';
+      const sw = document.createElement('span'); sw.className = 'swatch'; sw.style.background = L.color;
+      const nm = document.createElement('span'); nm.textContent = `Laag ${k + 1}` + (k === 0 ? ' · onderplaat' : k === n - 1 ? ' · bovenste' : '');
+      const info = document.createElement('small'); info.textContent = k === 0 ? 'volle plaat' : S ? `${S.pieces} ${S.pieces === 1 ? 'stuk' : 'stukken'}` : '';
+      const mv = (d, label, dis) => { const b = document.createElement('button'); b.type = 'button'; b.className = 'btn sm'; b.textContent = label; b.title = d > 0 ? 'Hoger leggen' : 'Lager leggen'; b.disabled = dis; b.addEventListener('click', () => { const o = trace.stackOrder; [o[k], o[k + d]] = [o[k + d], o[k]]; trace.stack = buildStack(); render(); }); return b; };
+      row.append(sw, nm, info, mv(1, '\u2191', k === n - 1), mv(-1, '\u2193', k === 0));
+      lg.appendChild(row);
+    }
+    const ord = document.createElement('div'); ord.className = 'row';
+    const rv = document.createElement('button'); rv.type = 'button'; rv.className = 'btn'; rv.textContent = 'Volgorde omdraaien';
+    rv.addEventListener('click', () => { trace.stackOrder.reverse(); trace.stack = buildStack(); render(); });
+    ord.appendChild(rv);
+    lg.appendChild(ord);
+    const opts = document.createElement('div'); opts.className = 'group';
+    const ot = document.createElement('div'); ot.className = 'gl'; ot.textContent = 'Uitvoering';
+    const fr = document.createElement('label'); fr.className = 'check';
+    const fc = document.createElement('input'); fc.type = 'checkbox'; fc.checked = trace.stackFrame;
+    fc.addEventListener('change', () => { trace.stackFrame = fc.checked; trace.stack = buildStack(); render(); });
+    fr.append(fc, document.createTextNode(' Kader rond elke laag (alles blijft één stuk en de lagen passen precies op elkaar; het laagnummer wordt in het kader gegraveerd)'));
+    const gr = document.createElement('div'); gr.className = 'grid2';
+    gr.append(
+      numField('Breedte kader (mm)', { id: 'st_b', get: () => trace.stackBorder, set: (v) => { trace.stackBorder = Math.max(1, v); trace.stack = buildStack(); } }, trace, 0.5, 1),
+      numField('Kleinste detail (mm)', { id: 'st_m', get: () => trace.stackMin, set: (v) => { trace.stackMin = Math.max(0, v); trace.stack = buildStack(); } }, trace, 0.1, 0),
+    );
+    const oe = document.createElement('p'); oe.className = 'explain';
+    oe.textContent = 'Kleinste detail: smallere slierten dan dit worden weggelaten, omdat ze bij het snijden breken of verbranden. Op 3 mm hout is 0,6 tot 1 mm een goed begin; voor papier kan het fijner.';
+    opts.append(ot, fr, gr, oe);
+    const st = document.createElement('div'); st.className = 'cstat';
+    st.textContent = trace.busy ? 'Bezig…' : !trace.stack.length ? 'Nog geen lagen gevonden.' : `${trace.stack.length} lagen. Op de plaat zie je hoe het eruitziet als ze op elkaar liggen.`;
+    const row = document.createElement('div'); row.className = 'row';
+    const ok = document.createElement('button'); ok.className = 'btn primary'; ok.type = 'button'; ok.textContent = 'Lagen op de plaat zetten'; ok.disabled = !trace.stack.length || trace.busy;
+    ok.addEventListener('click', applyStack);
+    const no = document.createElement('button'); no.className = 'btn'; no.type = 'button'; no.textContent = 'Annuleren';
+    no.addEventListener('click', cancelTrace);
+    row.append(ok, no);
+    wrap.append(seg, ctrls, size, lg, opts, st, row);
     props.appendChild(wrap);
   }
 
@@ -2347,7 +2480,10 @@ const APP = /*__APP__*/{ standalone: false };
     if (trace.active && trace.dataUrl) {
       const th = trace.widthMm * trace.h / trace.w;
       el('image', { x: trace.x, y: trace.y, width: trace.widthMm, height: th, href: trace.dataUrl, opacity: 0.3, preserveAspectRatio: 'none', 'pointer-events': 'none' }, canvas);
-      for (const l of traceOutputLayers()) {
+      if (trace.mode === 'stack') {
+        // zo ziet het eruit als alle lagen op elkaar liggen
+        trace.stack.forEach((L, k) => el('path', { d: svgPathD(L.subpaths), 'fill-rule': 'evenodd', fill: L.color, 'fill-opacity': 1, stroke: 'rgba(0,0,0,.55)', 'stroke-width': 0.8 / pxmm(), 'pointer-events': 'none', style: `filter: drop-shadow(${0.35 * (k > 0)}px ${0.35 * (k > 0)}px 0.3px rgba(0,0,0,.45))` }, canvas));
+      } else for (const l of traceOutputLayers()) {
         const r = ROLE[l.role];
         el('path', { d: svgPathD(l.subpaths), 'fill-rule': 'evenodd', fill: r.fill ? r.color : 'none', 'fill-opacity': r.fill ? 0.75 : 0, stroke: r.color, 'stroke-width': 1.2 / pxmm(), 'pointer-events': 'none' }, canvas);
       }
