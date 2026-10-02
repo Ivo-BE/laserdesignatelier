@@ -1,0 +1,14 @@
+{
+  "name": "laserdesignatelier",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "build": "node build.mjs",
+    "testkaart": "node scripts/testkaart.mjs"
+  },
+  "devDependencies": {
+    "jszip": "^3.10.2",
+    "opentype.js": "^2.0.0"
+  }
+}

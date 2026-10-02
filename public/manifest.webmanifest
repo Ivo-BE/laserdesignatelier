@@ -1,0 +1,11 @@
+{
+  "name": "Laser Design Atelier",
+  "short_name": "Laser Atelier",
+  "description": "Ontwerp lasercut-bestanden voor LightBurn en andere lasersoftware.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#eef0f2",
+  "theme_color": "#155e75",
+  "lang": "nl",
+  "icons": [{ "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }]
+}
