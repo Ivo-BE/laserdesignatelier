@@ -516,6 +516,7 @@ input[type="range"] { width: 100%; accent-color: var(--accent); }
       <div class="seg" role="group" aria-label="Weergave">
         <button type="button" class="segbtn" data-pv="material" aria-pressed="true">Zo wordt het</button>
         <button type="button" class="segbtn" data-pv="layers" aria-pressed="false">Laserlagen</button>
+        <button type="button" class="segbtn" data-pv="stack" aria-pressed="false" hidden>Gestapeld</button>
       </div>
       <div class="spacer"></div>
       <button class="btn" id="pvSave">Bewaar als PNG</button>
@@ -1092,6 +1093,39 @@ const APP = /*__APP__*/{ standalone: false };
     }
     return out;
   }
+  function hexColor(c) {
+    const m = /rgb\((\d+),(\d+),(\d+)\)/.exec(String(c).replace(/\s/g, ''));
+    return m ? '#' + [m[1], m[2], m[3]].map((v) => (+v).toString(16).padStart(2, '0')).join('') : (String(c).startsWith('#') ? c : '#999999');
+  }
+  // alle lagen van één stapel op elkaar, in hun kleur, met een schaduwrand per laag
+  function stackedSVG(sid) {
+    const pcs = state.items.filter((i) => i.stack && i.stack.id === sid && i.type === 'path').sort((a, b) => a.stack.k - b.stack.k);
+    if (!pcs.length) return null;
+    const r0 = pcs[0].stackRef;
+    const layers = pcs.map((p) => ({ p, d: svgPathD(mapSubpaths(p.subpaths, (q) => [q[0] + r0[0] - p.stackRef[0], q[1] + r0[1] - p.stackRef[1]])) }));
+    const bb = subpathsBBox(mapSubpaths(pcs[0].subpaths, (q) => q), { x: 0, y: 0, w: 1, h: 1 });
+    const m = 6, W = bb.w + 2 * m, H = bb.h + 2 * m;
+    const body = layers.map(({ p, d }, k) => `<path d="${d}" fill="${p.layerColor || '#cccccc'}" fill-rule="evenodd" stroke="rgba(0,0,0,.35)" stroke-width="0.15"${k ? ' filter="url(#sh)"' : ''}/>`).join('');
+    return { w: W, h: H, svg: `<svg xmlns="http://www.w3.org/2000/svg" width="${W}mm" height="${H}mm" viewBox="${bb.x - m} ${bb.y - m} ${W} ${H}"><defs><filter id="sh" x="-5%" y="-5%" width="110%" height="110%"><feDropShadow dx="0.35" dy="0.55" stdDeviation="0.45" flood-color="#000" flood-opacity="0.5"/></filter></defs><rect x="${bb.x - m}" y="${bb.y - m}" width="${W}" height="${H}" fill="#f4f1ea"/>${body}</svg>` };
+  }
+  function stackIds() { return [...new Set(state.items.filter((i) => i.stack).map((i) => i.stack.id))]; }
+  // zijpaneel: kleur per laag en de knop om het gestapeld te bekijken
+  function stackControls(items) {
+    const p = items.find((i) => i.stack && i.type === 'path');
+    if (!p) return null;
+    const g = document.createElement('div'); g.className = 'group';
+    const t = document.createElement('div'); t.className = 'gl'; t.textContent = `Laag ${p.stack.k + 1} van ${p.stack.n} (gestapeld kunstwerk)`;
+    const lab = document.createElement('label'); lab.className = 'field'; lab.htmlFor = 'p_lcol'; lab.textContent = 'Kleur van deze laag (voor het voorbeeld)';
+    const inp = document.createElement('input'); inp.type = 'color'; inp.id = 'p_lcol'; inp.value = p.layerColor || '#cccccc';
+    inp.addEventListener('input', () => { p.layerColor = inp.value; scheduleSave(); });
+    lab.appendChild(inp);
+    const b = document.createElement('button'); b.type = 'button'; b.className = 'btn primary'; b.textContent = 'Bekijk gestapeld';
+    b.addEventListener('click', () => { pvMode = 'stack'; pvStack = p.stack.id; showPreview(); });
+    const ex = document.createElement('p'); ex.className = 'explain';
+    ex.textContent = 'Kies de kleur van het hout, de beits of het papier dat je voor deze laag gebruikt. Zo zie je vooraf hoe het eindresultaat wordt. De kleur gaat niet naar de laser.';
+    g.append(t, lab, b, ex);
+    return g;
+  }
   function countOuter(paths) { return paths.filter((p) => ClipperLib.Clipper.Orientation(p)).length; }
   function applyStack() {
     const st = trace.stack;
@@ -1110,12 +1144,13 @@ const APP = /*__APP__*/{ standalone: false };
     let grown = false;
     if (needW > state.sheet.w || needH > state.sheet.h) { state.sheet = { w: Math.ceil(Math.max(state.sheet.w, needW)), h: Math.ceil(Math.max(state.sheet.h, needH)) }; grown = true; syncSheetInputs(); }
     const made = [];
+    const sid = 's' + Date.now().toString(36);
     st.forEach((L, k) => {
       const col = k % perRow, row = Math.floor(k / perRow);
       const dx = 2 + col * (W + gap) - (trace.x - b), dy = y0 + row * (H + gap) - (trace.y - b);
       const T = (q) => [q[0] + dx, q[1] + dy];
       const g = newGid();
-      const piece = { id: nid(), role: 'buiten', type: 'path', evenodd: true, group: g, name: `Laag ${k + 1}${k === 0 ? ' (onderste)' : k === st.length - 1 ? ' (bovenste)' : ''}`, layerColor: L.color, subpaths: mapSubpaths(L.subpaths, T) };
+      const piece = { id: nid(), role: 'buiten', type: 'path', evenodd: true, group: g, name: `Laag ${k + 1}${k === 0 ? ' (onderste)' : k === st.length - 1 ? ' (bovenste)' : ''}`, layerColor: hexColor(L.color), stack: { id: sid, k, n: st.length }, stackRef: [trace.x + dx, trace.y + dy], subpaths: mapSubpaths(L.subpaths, T) };
       made.push(piece);
       // laagnummer: in het kader gegraveerd, anders als hulplijn erboven
       const label = b >= 3
@@ -1127,6 +1162,8 @@ const APP = /*__APP__*/{ standalone: false };
     state.sel = made[0].id; state.multi = made.slice(1).map((m) => m.id);
     trace.active = false; trace.src = null; trace.layers = []; trace.stack = [];
     fit();
+    // meteen tonen hoe het eruitziet als alles op elkaar ligt
+    setTimeout(() => { pvMode = 'stack'; pvStack = sid; showPreview(); }, 50);
     toast(`${st.length} lagen geplaatst, elk als buitenrand. Snijd elke laag uit een eigen kleur of laat ze apart beitsen, en lijm ze in volgorde 1 (onderaan) tot ${st.length} op elkaar.` + (grown ? ` De plaat is vergroot tot ${state.sheet.w} × ${state.sheet.h} mm.` : ''));
   }
   function traceOutputLayers() { return trace.layers.filter((l) => !(trace.skipBg && l.bg) && l.role !== 'skip'); }
@@ -2341,6 +2378,7 @@ const APP = /*__APP__*/{ standalone: false };
   }
   function moveItem(it, dx, dy) {
     if (it.shape) { it.shape.x += dx; it.shape.y += dy; }
+    if (it.stackRef) { it.stackRef = [it.stackRef[0] + dx, it.stackRef[1] + dy]; }
     if ('x' in it) it.x += dx;
     if ('y' in it) it.y += dy;
     if ('cx' in it) { it.cx += dx; it.cy += dy; }
@@ -2758,7 +2796,7 @@ const APP = /*__APP__*/{ standalone: false };
     row.append(mk('Dupliceren', duplicate), mk('Verbergen', () => { all.forEach((it) => { it.hidden = true; }); render(); }), mk('Verwijderen', removeSel));
     const cb = document.createElement('button'); cb.className = 'btn'; cb.type = 'button'; cb.textContent = 'Contour eromheen…';
     cb.addEventListener('click', startContour);
-    wrap.append(...[gg, ge, wb, we, cb, al, transformControls(all), foldOpt(stencilControls(all), 'stencil', 'Letters uitsnijden om door te verven'), foldOpt(seriesControls(all), 'series', 'Zelfde ontwerp, telkens een andere naam'), fold(arrayControls(), 'array', 'Hetzelfde meerdere keren naast elkaar'), row].filter(Boolean));
+    wrap.append(...[gg, ge, stackControls(all), wb, we, cb, al, transformControls(all), foldOpt(stencilControls(all), 'stencil', 'Letters uitsnijden om door te verven'), foldOpt(seriesControls(all), 'series', 'Zelfde ontwerp, telkens een andere naam'), fold(arrayControls(), 'array', 'Hetzelfde meerdere keren naast elkaar'), row].filter(Boolean));
     props.appendChild(wrap);
   }
 
@@ -2882,6 +2920,7 @@ const APP = /*__APP__*/{ standalone: false };
       wrap.append(g);
     }
     if (it.type === 'path' && it.shape) wrap.append(shapeControls(it));
+    if (it.stack) wrap.append(stackControls([it]));
     if (it.type === 'path') wrap.append(editEntry(it), ...(it.shape ? [] : [sizeControls(it)]));
     wrap.append(...[transformControls([it]), foldOpt(stencilControls([it]), 'stencil', 'Letters uitsnijden om door te verven'), foldOpt(seriesControls([it]), 'series', 'Zelfde ontwerp, telkens een andere naam'), fold(arrayControls(), 'array', 'Hetzelfde meerdere keren naast elkaar')].filter(Boolean));
     props.appendChild(wrap);
@@ -3627,12 +3666,13 @@ const APP = /*__APP__*/{ standalone: false };
 
   let pvMode = 'material';
   const pxPerMM = 10; // 10 px per mm = 254 DPI
-  function rasterize(svg) {
+  let pvStack = null;
+  function rasterize(svg, wmm, hmm) {
     return new Promise((resolve, reject) => {
       const img = new Image();
       img.onload = () => {
         const c = document.createElement('canvas');
-        c.width = Math.round(state.sheet.w * pxPerMM); c.height = Math.round(state.sheet.h * pxPerMM);
+        c.width = Math.round((wmm || state.sheet.w) * pxPerMM); c.height = Math.round((hmm || state.sheet.h) * pxPerMM);
         c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
         c.toBlob((b) => b ? resolve(b) : reject(new Error('png')), 'image/png');
       };
@@ -3646,6 +3686,26 @@ const APP = /*__APP__*/{ standalone: false };
   let pvUrl = null;
   async function showPreview() {
     const dlg = document.getElementById('previewDlg');
+    const sids = stackIds();
+    document.querySelector('[data-pv="stack"]').hidden = !sids.length;
+    if (pvMode === 'stack' && !sids.length) pvMode = 'material';
+    if (pvMode === 'stack') {
+      const selS = selection().find((i) => i.stack);
+      if (selS) pvStack = selS.stack.id;
+      if (!sids.includes(pvStack)) pvStack = sids[0];
+      const S = stackedSVG(pvStack);
+      document.querySelectorAll('[data-pv]').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.pv === pvMode)));
+      document.getElementById('pvNote').textContent = 'Zo ziet het eruit als alle lagen op elkaar gelijmd zijn, onderste laag eerst. De kleuren komen uit je afbeelding; pas ze per laag aan in het zijpaneel (selecteer een laag).';
+      try {
+        const blob = await rasterize(S.svg, S.w, S.h);
+        if (pvUrl) URL.revokeObjectURL(pvUrl);
+        pvUrl = URL.createObjectURL(blob);
+        document.getElementById('pvImg').src = pvUrl;
+        dlg.hidden = false;
+        document.getElementById('pvClose').focus();
+      } catch { toast('Het voorbeeld kon niet worden gemaakt.'); }
+      return;
+    }
     document.querySelectorAll('[data-pv]').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.pv === pvMode)));
     const nHidden = state.items.filter(isHidden).length;
     const hidNote = nHidden ? ` ${nHidden} verborgen object(en) staan niet in deze preview, maar worden wel gelaserd.` : '';
@@ -3665,7 +3725,10 @@ const APP = /*__APP__*/{ standalone: false };
   document.getElementById('pvClose').addEventListener('click', () => { document.getElementById('previewDlg').hidden = true; });
   document.getElementById('previewDlg').addEventListener('click', (e) => { if (e.target.id === 'previewDlg') e.currentTarget.hidden = true; });
   document.getElementById('pvSave').addEventListener('click', async () => {
-    try { save(`ontwerp-${stamp()}_${pvMode === 'material' ? 'preview' : 'lagen'}.png`, await rasterize(previewSVG(pvMode))); } catch { toast('De preview kon niet worden gemaakt.'); }
+    try {
+      if (pvMode === 'stack') { const S = stackedSVG(pvStack); return save(`ontwerp-${stamp()}_gestapeld.png`, await rasterize(S.svg, S.w, S.h)); }
+      save(`ontwerp-${stamp()}_${pvMode === 'material' ? 'preview' : 'lagen'}.png`, await rasterize(previewSVG(pvMode)));
+    } catch { toast('De preview kon niet worden gemaakt.'); }
   });
 
   const stamp = () => new Date().toISOString().slice(0, 10);
