@@ -119,6 +119,14 @@ input[type="number"] { font-family: var(--font-num); font-variant-numeric: tabul
 .selhead .dims { font-family: var(--font-num); font-size: 12px; color: var(--muted); }
 .group { display: grid; gap: 6px; }
 .group > .gl { font-size: 12px; font-weight: 600; color: var(--fg); }
+details.fold { border: 1px solid var(--line); border-radius: var(--r); padding: 0; gap: 0; background: var(--panel); }
+details.fold > summary { list-style: none; cursor: pointer; padding: 8px 10px 8px 28px; position: relative; display: grid; gap: 1px; }
+details.fold > summary::-webkit-details-marker { display: none; }
+details.fold > summary::before { content: ""; position: absolute; left: 11px; top: 13px; border: 5px solid transparent; border-left-color: var(--muted); transition: transform .12s; transform-origin: 2px 5px; }
+details.fold[open] > summary::before { transform: rotate(90deg); }
+details.fold > summary .gl { font-size: 12.5px; font-weight: 600; }
+details.fold > summary small { font-size: 12px; color: var(--muted); }
+details.fold > .foldbody { display: grid; gap: 8px; padding: 2px 10px 10px; }
 .explain { font-size: 12px; color: var(--muted); line-height: 1.45; margin: 0; }
 .objlist { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; }
 .objrow { display: grid; grid-template-columns: 30px 12px minmax(0, 1fr) auto; align-items: center; gap: 8px; padding: 3px 6px 3px 2px; border-radius: var(--r); cursor: pointer; font-size: 13px; border: 1px solid transparent; }
@@ -1457,16 +1465,38 @@ const APP = /*__APP__*/{ standalone: false };
     render();
     toast(`${n} ${n === 1 ? 'binnendeel' : 'binnendelen'} vastgezet met brugjes van ${String(w).replace('.', ',')} mm. Ctrl+Z maakt het ongedaan.`);
   }
+  // Inklapbaar onderdeel in het zijpaneel: titel + korte uitleg, standaard dicht (onthoudt open/dicht)
+  const openFolds = new Set();
+  function fold(g, key, summary) {
+    const d = document.createElement('details'); d.className = 'group fold'; d.open = openFolds.has(key);
+    const sm = document.createElement('summary');
+    const t = g.querySelector(':scope > .gl');
+    const tt = document.createElement('span'); tt.className = 'gl'; tt.textContent = t ? t.textContent : key;
+    const sub = document.createElement('small'); sub.textContent = summary;
+    sm.append(tt, sub);
+    if (t) t.remove();
+    d.appendChild(sm);
+    const body = document.createElement('div'); body.className = 'foldbody';
+    while (g.firstChild) body.appendChild(g.firstChild);
+    d.appendChild(body);
+    d.addEventListener('toggle', () => { if (d.open) openFolds.add(key); else openFolds.delete(key); });
+    return d;
+  }
+  const foldOpt = (g, key, sum) => (g ? fold(g, key, sum) : null);
   function stencilControls(items) {
     const parts = items.filter((i) => ['text', 'weld', 'path'].includes(i.type));
     if (!parts.length) return null;
+    // alleen zinvol als de letters uitgesneden worden
+    if (!parts.some((p) => p.role === 'binnen' || p.role === 'buiten')) return null;
     const isl = stencilIslands(parts);
     const g = document.createElement('div'); g.className = 'group';
-    const t = document.createElement('div'); t.className = 'gl'; t.textContent = 'Sjabloon (stencil)';
+    const t = document.createElement('div'); t.className = 'gl'; t.textContent = 'Sjabloon maken (stencil)';
+    const intro = document.createElement('p'); intro.className = 'explain';
+    intro.textContent = 'Een sjabloon is een plaat waarin je letters uitsnijdt, om er later doorheen te verven of te zandstralen. Bij letters zoals O, A en B valt het binnenste stukje er dan uit. Brugjes zijn smalle strookjes die dat stukje aan de plaat vasthouden.';
     const st = document.createElement('div');
     st.className = 'cstat' + (isl ? ' bad' : '');
-    st.textContent = isl === null ? 'Controle niet beschikbaar.' : isl ? `${isl} ${isl === 1 ? 'binnendeel valt' : 'binnendelen vallen'} uit als je dit als sjabloon uitsnijdt (zoals het rondje in een O of A).` : 'Geen binnendelen: als sjabloon valt er niets uit.';
-    g.append(t, st);
+    st.textContent = isl === null ? 'Controle niet beschikbaar.' : isl ? `In deze tekst ${isl === 1 ? 'valt 1 stukje' : `vallen ${isl} stukjes`} uit (zoals het rondje in een O of A).` : 'Er valt niets uit: geen brugjes nodig.';
+    g.append(t, intro, st);
     if (isl) {
       const gr = document.createElement('div'); gr.className = 'grid2';
       gr.append(numField('Breedte brugje (mm)', { id: 'stw', get: () => stencil.width, set: (v) => { stencil.width = Math.min(10, Math.max(0.5, v)); } }, stencil, 0.25, 0.5));
@@ -1482,8 +1512,8 @@ const APP = /*__APP__*/{ standalone: false };
     }
     const ex = document.createElement('p'); ex.className = 'explain';
     ex.textContent = isl
-      ? 'De tekst wordt daarbij een vaste vorm (niet meer als tekst te wijzigen). Voor verf of zand is 2 mm op 3 mm hout stevig genoeg. Liever geen brugjes? Kies een sjabloonlettertype (Allerta, Saira of Stardos Stencil): die hebben ze al.'
-      : 'Tip: voor sjablonen zijn de lettertypes Allerta, Saira en Stardos Stencil gemaakt.';
+      ? 'Let op: na de brugjes kun je de woorden niet meer aanpassen (Ctrl+Z kan wel). Een brugje van 2 mm is stevig genoeg op 3 mm hout. Liever zonder brugjes? Kies bij Lettertype een sjabloonletter (Allerta, Saira of Stardos Stencil): die letters hebben de onderbrekingen al.'
+      : 'Tip: de lettertypes Allerta, Saira en Stardos Stencil zijn speciaal voor sjablonen gemaakt.';
     g.appendChild(ex);
     return g;
   }
@@ -2027,13 +2057,16 @@ const APP = /*__APP__*/{ standalone: false };
   function seriesControls(items) {
     const targets = textTargets(items);
     const g = document.createElement('div'); g.className = 'group';
-    const t = document.createElement('div'); t.className = 'gl'; t.textContent = 'Namenlijst: één exemplaar per naam';
+    const t = document.createElement('div'); t.className = 'gl'; t.textContent = 'Namenlijst';
     g.appendChild(t);
     if (!targets.length) return null;
+    const intro = document.createElement('p'); intro.className = 'explain';
+    intro.textContent = 'Maak van dit ontwerp in één keer een exemplaar per naam, bijvoorbeeld naambordjes voor een hele klas of ploeg. Typ of plak de namen hieronder, elke naam op een nieuwe regel. Per naam maakt de app een kopie met die naam in plaats van de huidige tekst, en verdeelt alles over de plaat.';
+    g.appendChild(intro);
     const lab = document.createElement('label'); lab.className = 'field'; lab.htmlFor = 'p_names';
     const cnt = document.createElement('span');
     const updCnt = () => { const n = parseNames(series.text).length; cnt.textContent = n ? ` (${n} ${n === 1 ? 'naam' : 'namen'})` : ''; };
-    lab.append('Namen, één per regel', cnt);
+    lab.append('Namen (elke naam op een nieuwe regel)', cnt);
     const ta = document.createElement('textarea'); ta.id = 'p_names'; ta.rows = 5; ta.spellcheck = false;
     ta.placeholder = 'Lotte\nMila\nNoah\n…of plak een kolom uit Excel';
     ta.value = series.text;
@@ -2071,7 +2104,7 @@ const APP = /*__APP__*/{ standalone: false };
     const ex = document.createElement('p'); ex.className = 'explain';
     ex.textContent = isLast
       ? `Plaat ${series.last.plate} staat klaar. Exporteer ze eerst; "Volgende plaat" zet daarna de overige namen op dezelfde plek.`
-      : 'Het geselecteerde ontwerp wordt het sjabloon. Per naam komt er een kopie, vanaf linksboven over de plaat verdeeld. Brugjes en een contour eromheen worden per naam opnieuw berekend.';
+      : 'Selecteer eerst het hele ontwerp (bv. de naam en de contour eromheen). Brugjes en contour worden per naam opnieuw berekend.';
     g.append(fl, gr, row, ex);
     return g;
   }
@@ -2589,7 +2622,7 @@ const APP = /*__APP__*/{ standalone: false };
     row.append(mk('Dupliceren', duplicate), mk('Verbergen', () => { all.forEach((it) => { it.hidden = true; }); render(); }), mk('Verwijderen', removeSel));
     const cb = document.createElement('button'); cb.className = 'btn'; cb.type = 'button'; cb.textContent = 'Contour eromheen…';
     cb.addEventListener('click', startContour);
-    wrap.append(...[gg, ge, wb, we, cb, al, transformControls(all), stencilControls(all), seriesControls(all), arrayControls(), row].filter(Boolean));
+    wrap.append(...[gg, ge, wb, we, cb, al, transformControls(all), foldOpt(stencilControls(all), 'stencil', 'Letters uitsnijden om door te verven'), foldOpt(seriesControls(all), 'series', 'Zelfde ontwerp, telkens een andere naam'), fold(arrayControls(), 'array', 'Hetzelfde meerdere keren naast elkaar'), row].filter(Boolean));
     props.appendChild(wrap);
   }
 
@@ -2714,7 +2747,7 @@ const APP = /*__APP__*/{ standalone: false };
     }
     if (it.type === 'path' && it.shape) wrap.append(shapeControls(it));
     if (it.type === 'path') wrap.append(editEntry(it), ...(it.shape ? [] : [sizeControls(it)]));
-    wrap.append(...[transformControls([it]), stencilControls([it]), seriesControls([it]), arrayControls()].filter(Boolean));
+    wrap.append(...[transformControls([it]), foldOpt(stencilControls([it]), 'stencil', 'Letters uitsnijden om door te verven'), foldOpt(seriesControls([it]), 'series', 'Zelfde ontwerp, telkens een andere naam'), fold(arrayControls(), 'array', 'Hetzelfde meerdere keren naast elkaar')].filter(Boolean));
     props.appendChild(wrap);
     const row = document.createElement('div');
     row.className = 'row';
