@@ -1528,17 +1528,56 @@ const APP = /*__APP__*/{ standalone: false };
         while (qh < qt) { const i = q[qh++], x = i % w; if (x > 0) add(i - 1); if (x < w - 1) add(i + 1); if (i >= w) add(i - w); if (i < N - w) add(i + w); }
       }
     }
-    // 3. lijnen (XDoG) en donkere vlakken
-    const s = portrait.lineSize * sc;
+    // 3. contrast rekken (donkere binnenfoto's), zodat lijnen overal even sterk zijn
+    { const hist = new Uint32Array(256); for (let i = 0; i < N; i++) hist[Math.min(255, (G[i] * 255) | 0)]++;
+      let lo = 0, hi = 255, c = 0; while (lo < 255 && (c += hist[lo]) < N * 0.01) lo++; c = 0; while (hi > 0 && (c += hist[hi]) < N * 0.01) hi--;
+      if (hi - lo > 10) { const a = lo / 255, k = 255 / (hi - lo); for (let i = 0; i < N; i++) G[i] = Math.min(1, Math.max(0, (G[i] - a) * k)); } }
+    // 4. richting van de randen (structuurtensor): langs die richting worden lijnen doorgetrokken en gladgestreken
+    const gx = new Float32Array(N), gy = new Float32Array(N);
+    for (let y = 1; y < h - 1; y++) for (let x = 1; x < w - 1; x++) {
+      const i = y * w + x;
+      gx[i] = (G[i - w + 1] + 2 * G[i + 1] + G[i + w + 1]) - (G[i - w - 1] + 2 * G[i - 1] + G[i + w - 1]);
+      gy[i] = (G[i + w - 1] + 2 * G[i + w] + G[i + w + 1]) - (G[i - w - 1] + 2 * G[i - w] + G[i - w + 1]);
+    }
+    const E0 = new Float32Array(N), F0 = new Float32Array(N), H0 = new Float32Array(N);
+    for (let i = 0; i < N; i++) { E0[i] = gx[i] * gx[i]; F0[i] = gx[i] * gy[i]; H0[i] = gy[i] * gy[i]; }
+    const Et = gaussBlur(E0, w, h, 3 * sc), Ft = gaussBlur(F0, w, h, 3 * sc), Ht = gaussBlur(H0, w, h, 3 * sc);
+    const tx = new Float32Array(N), ty = new Float32Array(N);
+    for (let i = 0; i < N; i++) {
+      const lam = 0.5 * (Et[i] + Ht[i] - Math.sqrt((Et[i] - Ht[i]) ** 2 + 4 * Ft[i] * Ft[i]));
+      let ax = lam - Ht[i], ay = Ft[i]; const n = Math.hypot(ax, ay);
+      if (n < 1e-9) { ax = 1; ay = 0; } else { ax /= n; ay /= n; }
+      tx[i] = ax; ty[i] = ay;
+    }
+    // 5. lijnen (verschil van twee vervagingen), uitgemiddeld langs de randrichting
+    const s = portrait.lineSize * 1.25 * sc;
     const g1 = gaussBlur(G, w, h, s), g2 = gaussBlur(G, w, h, s * 1.6), g3 = gaussBlur(G, w, h, 3 * sc);
-    const eps = -(0.004 + (100 - portrait.lineAmt) * 0.00016), dark = (portrait.darkAmt / 100) * 0.45;
+    const D = new Float32Array(N); for (let i = 0; i < N; i++) D[i] = g1[i] - 0.99 * g2[i];
+    const L = Math.max(3, Math.round(12 * sc)), wts = []; for (let k = 1; k <= L; k++) wts.push(Math.exp(-(k * k) / (2 * (L / 2) ** 2)));
+    const Hf = new Float32Array(N);
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+      const i0 = y * w + x; let acc = D[i0], ws = 1;
+      for (const sg of [1, -1]) {
+        let px = x, py = y, dx = tx[i0] * sg, dy = ty[i0] * sg;
+        for (let k = 0; k < L; k++) {
+          px += dx; py += dy;
+          if (px < 0 || py < 0 || px > w - 1 || py > h - 1) break;
+          const j = (py | 0) * w + (px | 0);
+          let nx = tx[j], ny = ty[j]; if (nx * dx + ny * dy < 0) { nx = -nx; ny = -ny; }
+          dx = nx; dy = ny;
+          acc += D[j] * wts[k]; ws += wts[k];
+        }
+      }
+      Hf[i0] = acc / ws;
+    }
+    const eps = -(0.003 + (100 - portrait.lineAmt) * 0.00008), dark = (portrait.darkAmt / 100) * 0.45;
     let ink = new Uint8Array(N);
-    for (let i = 0; i < N; i++) { if (bg[i]) continue; ink[i] = g1[i] - 0.99 * g2[i] < eps || g3[i] < dark ? 1 : 0; }
-    // 4. opkuisen: losse vlekjes en gaatjes weg, randen glad (strak als een stripfiguur)
-    dropSmall(ink, w, h, 1, Math.round(150 * sc * sc));
-    dropSmall(ink, w, h, 0, Math.round(40 * sc * sc));
+    for (let i = 0; i < N; i++) { if (bg[i]) continue; ink[i] = Hf[i] < eps || g3[i] < dark ? 1 : 0; }
+    // 6. opkuisen: korte streepjes en gaatjes weg, randen glad (strak als een stripfiguur)
+    dropSmall(ink, w, h, 1, Math.round(400 * sc * sc));
+    dropSmall(ink, w, h, 0, Math.round(60 * sc * sc));
     const f = new Float32Array(N); for (let i = 0; i < N; i++) f[i] = ink[i];
-    const sm = gaussBlur(f, w, h, 1.5 * sc);
+    const sm = gaussBlur(f, w, h, 2.5 * sc);
     for (let i = 0; i < N; i++) ink[i] = sm[i] > 0.5 && !bg[i] ? 1 : 0;
     portrait.bgMask = portrait.bgSeeds.length ? bg : null;
     const out = new ImageData(w, h), o = out.data;
@@ -1627,7 +1666,8 @@ const APP = /*__APP__*/{ standalone: false };
     const traceMask = (mask) => {
       const im = new ImageData(w, h), o = im.data;
       for (let i = 0, j = 0; i < N; i++, j += 4) { const v = mask[i] ? 0 : 255; o[j] = o[j + 1] = o[j + 2] = v; o[j + 3] = 255; }
-      const td = ImageTracer.imagedataToTracedata(im, { pathomit: 2, ltres: trace.smooth, qtres: trace.smooth, rightangleenhance: false, blurradius: 0, layering: 0, roundcoords: 2, colorsampling: 0, numberofcolors: 2, colorquantcycles: 1, pal: [{ r: 0, g: 0, b: 0, a: 255 }, { r: 255, g: 255, b: 255, a: 255 }] });
+      const sm = portrait.kind === 'photo' ? Math.max(2, trace.smooth) : trace.smooth;
+      const td = ImageTracer.imagedataToTracedata(im, { pathomit: 2, ltres: sm, qtres: sm, rightangleenhance: false, blurradius: 0, layering: 0, roundcoords: 2, colorsampling: 0, numberofcolors: 2, colorquantcycles: 1, pal: [{ r: 0, g: 0, b: 0, a: 255 }, { r: 255, g: 255, b: 255, a: 255 }] });
       const li = td.palette.findIndex((c) => c.r < 128);
       const polys = [];
       for (const pth of td.layers[li] || []) {
@@ -1656,6 +1696,9 @@ const APP = /*__APP__*/{ standalone: false };
       const thin = boolop(C.ClipType.ctDifference, D, offset(offset(D, -r), r));
       if (thin.length) Dp = boolop(C.ClipType.ctUnion, D, offset(thin, r * 0.8));
     }
+    // randen van de lijnen gladstrijken: inkepingen dicht, uitsteeksels weg
+    Dp = offset(offset(Dp, 0.4), -0.4);
+    Dp = offset(offset(Dp, -0.2), 0.2);
     // 5. bovenlaag = figuur min lijnen; te smalle reepjes hout vallen weg
     let T = boolop(C.ClipType.ctDifference, F, Dp);
     if (portrait.minWood > 0) { const r = portrait.minWood / 2; T = offset(offset(T, -r), r); T = boolop(C.ClipType.ctIntersection, T, F); }
@@ -1868,7 +1911,7 @@ const APP = /*__APP__*/{ standalone: false };
     me.textContent = 'Dunste lijn: smallere sleufjes worden breder gemaakt, anders verbranden ze. Smalste hout: dunnere reepjes tussen twee lijnen breken af en worden weggelaten. Op 3 mm hout zijn 0,8 en 1 mm een goed begin.';
     more.append(mt, gr, me, range('pt_sm', 'Gladheid', 0.2, 5, 0.1, () => trace.smooth, (v) => { trace.smooth = v; }));
     const st = document.createElement('div'); st.className = 'cstat' + (R && R.empty ? ' bad' : '');
-    st.textContent = trace.busy ? 'Bezig met maken…' : !R ? 'Bezig…' : R.empty ? 'Geen tekening gevonden. Schuif "Hoeveel wordt lijn" naar rechts.' : `Onderplaat ${Math.round(R.board.w)} × ${Math.round(R.board.h)} mm.` + (R.thin ? ' Te dunne lijnen zijn breder gemaakt.' : '');
+    st.textContent = trace.busy ? (portrait.kind === 'photo' ? 'Bezig met de foto omzetten naar een tekening… even geduld.' : 'Bezig met maken…') : !R ? 'Bezig…' : R.empty ? 'Geen tekening gevonden. Schuif "Hoeveel wordt lijn" naar rechts.' : `Onderplaat ${Math.round(R.board.w)} × ${Math.round(R.board.h)} mm.` + (R.thin ? ' Te dunne lijnen zijn breder gemaakt.' : '');
     const row = document.createElement('div'); row.className = 'row';
     const ok = document.createElement('button'); ok.className = 'btn primary'; ok.type = 'button'; ok.textContent = 'Op de plaat zetten'; ok.disabled = !R || R.empty || trace.busy;
     ok.addEventListener('click', applyPortrait);
