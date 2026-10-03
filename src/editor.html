@@ -362,6 +362,9 @@ input[type="range"] { width: 100%; accent-color: var(--accent); }
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="3" y="4" width="10" height="10" rx="1"/><path d="M5 12l3-3 3 3"/><path d="M14 13c3-4 6-2 7 1s-3 7-7 4" stroke-dasharray="2 1.5"/><circle cx="14" cy="13" r="1.3" fill="currentColor"/></svg>
       </button>
       <input id="fileTrace" type="file" accept="image/*" hidden>
+      <button class="tool" id="btnPortrait" title="Portretbord: een lijntekening uitsnijden in licht hout op een donkere onderplaat">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="3.5" y="3.5" width="17" height="17" rx="1.5"/><circle cx="12" cy="9.5" r="2.8"/><path d="M6.5 20.5c.6-3.6 2.8-5.6 5.5-5.6s4.9 2 5.5 5.6"/></svg>
+      </button>
       <button class="tool" id="btnStackImg" title="Gelaagd kunstwerk uit een afbeelding: elke kleur een laag om uit te snijden en op elkaar te lijmen">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M12 4l8 4-8 4-8-4z"/><path d="M4 12l8 4 8-4"/><path d="M4 16l8 4 8-4"/></svg>
       </button>
@@ -971,13 +974,14 @@ const APP = /*__APP__*/{ standalone: false };
   let traceStartMode = null;
   document.getElementById('btnTrace').addEventListener('click', () => { traceStartMode = null; document.getElementById('fileTrace').click(); });
   document.getElementById('btnStackImg').addEventListener('click', () => { traceStartMode = 'stack'; document.getElementById('fileTrace').click(); });
+  document.getElementById('btnPortrait').addEventListener('click', () => { traceStartMode = 'portrait'; document.getElementById('fileTrace').click(); });
   document.getElementById('fileTrace').addEventListener('change', (e) => {
     const f = e.target.files[0]; e.target.value = '';
     if (!f) return;
     if (!window.ImageTracer) return toast('Omzetten is nu niet beschikbaar: de rekenmodule kon niet laden.');
     const img = new Image();
     img.onload = () => {
-      const max = 700;
+      const max = traceStartMode === 'portrait' ? 1100 : 700;
       const k = Math.min(1, max / Math.max(img.width, img.height));
       const c = document.createElement('canvas');
       c.width = Math.max(1, Math.round(img.width * k)); c.height = Math.max(1, Math.round(img.height * k));
@@ -988,6 +992,7 @@ const APP = /*__APP__*/{ standalone: false };
         active: true, src: ctx.getImageData(0, 0, c.width, c.height), w: c.width, h: c.height, dataUrl: c.toDataURL('image/png'),
         widthMm: Math.round(Math.min(100, state.sheet.w * 0.6)), name: f.name.replace(/\.[^.]+$/, ''), fills: [], stackOrder: [], fromItems: null,
       });
+      if (traceStartMode === 'portrait') { trace.widthMm = 200; trace.x = 10; trace.y = 10; portrait.res = null; }
       if (traceStartMode) { trace.mode = traceStartMode; trace.roles = []; if (trace.mode === 'stack' && trace.colors < 4) trace.colors = 4; }
       trace.x = Math.round((state.sheet.w - trace.widthMm) / 2);
       trace.y = Math.max(0, Math.round((state.sheet.h - trace.widthMm * trace.h / trace.w) / 2));
@@ -1005,6 +1010,7 @@ const APP = /*__APP__*/{ standalone: false };
   function scheduleTrace() { clearTimeout(traceTimer); traceTimer = setTimeout(runTrace, 250); }
   function runTrace() {
     if (!trace.active || !trace.src) return;
+    if (trace.mode === 'portrait') return runPortrait();
     trace.busy = true; render();
     setTimeout(() => {
       try {
@@ -1138,13 +1144,27 @@ const APP = /*__APP__*/{ standalone: false };
   }
   // alle lagen van één stapel op elkaar, in hun kleur, met een schaduwrand per laag
   function stackedSVG(sid) {
-    const pcs = state.items.filter((i) => i.stack && i.stack.id === sid && i.type === 'path').sort((a, b) => a.stack.k - b.stack.k);
-    if (!pcs.length) return null;
-    const r0 = pcs[0].stackRef;
-    const layers = pcs.map((p) => ({ p, d: svgPathD(mapSubpaths(p.subpaths, (q) => [q[0] + r0[0] - p.stackRef[0], q[1] + r0[1] - p.stackRef[1]])) }));
-    const bb = subpathsBBox(mapSubpaths(pcs[0].subpaths, (q) => q), { x: 0, y: 0, w: 1, h: 1 });
+    const all = state.items.filter((i) => i.stack && i.stack.id === sid);
+    const cutsOf = (k) => all.filter((i) => i.stack.k === k && i.type === 'path' && (i.role === 'buiten' || i.role === 'binnen'));
+    const ks = [...new Set(all.map((i) => i.stack.k))].sort((a, b) => a - b).filter((k) => cutsOf(k).length);
+    if (!ks.length) return null;
+    const base = cutsOf(ks[0]).find((i) => i.role === 'buiten') || cutsOf(ks[0])[0];
+    const r0 = base.stackRef;
+    const back = (it, sps) => mapSubpaths(sps, (q) => [q[0] + r0[0] - it.stackRef[0], q[1] + r0[1] - it.stackRef[1]]);
+    const bb = subpathsBBox(back(base, base.subpaths), { x: 0, y: 0, w: 1, h: 1 });
     const m = 6, W = bb.w + 2 * m, H = bb.h + 2 * m;
-    const body = layers.map(({ p, d }, k) => `<path d="${d}" fill="${p.layerColor || '#cccccc'}" fill-rule="evenodd" stroke="rgba(0,0,0,.35)" stroke-width="0.15"${k ? ' filter="url(#sh)"' : ''}/>`).join('');
+    let body = '';
+    ks.forEach((k, n) => {
+      const cuts = cutsOf(k);
+      const main = cuts.find((i) => i.role === 'buiten') || cuts[0];
+      const d = cuts.map((c) => svgPathD(back(c, c.subpaths))).join(' ');
+      body += `<path d="${d}" fill="${main.layerColor || '#cccccc'}" fill-rule="evenodd" stroke="rgba(0,0,0,.35)" stroke-width="0.15"${n ? ' filter="url(#sh)"' : ''}/>`;
+      for (const g of all.filter((i) => i.stack.k === k && !cuts.includes(i) && i.role !== 'hulp')) {
+        const ex = toExportItem(g);
+        const sps = ex.type === 'path' ? ex.subpaths : itemSubpaths(ex);
+        body += `<path d="${svgPathD(back(g, sps))}" fill="#3b2a1e" fill-opacity="0.85" fill-rule="nonzero"/>`;
+      }
+    });
     return { w: W, h: H, svg: `<svg xmlns="http://www.w3.org/2000/svg" width="${W}mm" height="${H}mm" viewBox="${bb.x - m} ${bb.y - m} ${W} ${H}"><defs><filter id="sh" x="-5%" y="-5%" width="110%" height="110%"><feDropShadow dx="0.35" dy="0.55" stdDeviation="0.45" flood-color="#000" flood-opacity="0.5"/></filter></defs><rect x="${bb.x - m}" y="${bb.y - m}" width="${W}" height="${H}" fill="#f4f1ea"/>${body}</svg>` };
   }
   function stackIds() { return [...new Set(state.items.filter((i) => i.stack).map((i) => i.stack.id))]; }
@@ -1221,6 +1241,7 @@ const APP = /*__APP__*/{ standalone: false };
   function cancelTrace() { trace.active = false; trace.src = null; trace.layers = []; trace.fromItems = null; render(); }
 
   function renderTracePanel(head) {
+    if (trace.mode === 'portrait') return renderPortraitPanel(head);
     if (trace.fromItems) {
       head.innerHTML = '<span class="kind">Functie</span><span class="name">Gestapeld kunstwerk maken</span><span class="explain">Elke vorm wordt een laag. De onderste laag is de volle plaat; elke laag erboven is iets kleiner. Op de plaat zie je hoe het eruitziet als alles op elkaar ligt.</span>';
       const wrap = document.createElement('div'); wrap.style.display = 'grid'; wrap.style.gap = '12px';
@@ -1426,6 +1447,276 @@ const APP = /*__APP__*/{ standalone: false };
     no.addEventListener('click', cancelTrace);
     row.append(ok, no);
     wrap.append(...[seg, main, st, row, fold(more, 'stackmore', 'Volgorde, kader, maat, gladheid')].filter(Boolean));
+    props.appendChild(wrap);
+  }
+
+  // ---------- Portretbord: lijntekening uitsnijden in licht hout op een donkere onderplaat ----------
+  // De zwarte lijnen worden sleufjes door de bovenlaag; je kijkt erdoor op de donkere onderplaat.
+  const portrait = { thr: 128, rand: 4, minLine: 0.8, minWood: 1, margin: 15, islands: 'glue', bridge: 1.2, tag: true, tagText: 'Naam ♥ Naam', res: null };
+  const WOOD_DARK = '#4a2f22', WOOD_LIGHT = '#e9d8b4';
+  let portraitTimer = null;
+  function schedulePortrait() { clearTimeout(portraitTimer); portraitTimer = setTimeout(runPortrait, 250); }
+  function runPortrait() {
+    trace.busy = true; render();
+    setTimeout(() => {
+      try { portrait.res = buildPortrait(); } catch (err) { console.error(err); portrait.res = null; toast('Het portretbord kon niet gemaakt worden met deze tekening.'); }
+      trace.busy = false; render();
+    }, 20);
+  }
+  function buildPortrait() {
+    if (!window.ClipperLib || !window.ImageTracer) throw new Error('libs');
+    const SC = 1000, C = ClipperLib;
+    const { w, h } = trace, d = trace.src.data, k = trace.widthMm / w;
+    const N = w * h;
+    // 1. zwart = lijn
+    const dark = new Uint8Array(N);
+    for (let i = 0, j = 0; i < N; i++, j += 4) dark[i] = 0.299 * d[j] + 0.587 * d[j + 1] + 0.114 * d[j + 2] < portrait.thr ? 1 : 0;
+    // 2. figuur = alles wat niet bij de achtergrond hoort; de lijnen eerst 'rand' dikker, dan sluiten kleine openingen ook
+    const dist = new Float32Array(N);
+    for (let i = 0; i < N; i++) dist[i] = dark[i] ? 0 : 1e9;
+    const D2 = Math.SQRT2;
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+      const i = y * w + x; let v = dist[i];
+      if (x > 0) v = Math.min(v, dist[i - 1] + 1);
+      if (y > 0) { v = Math.min(v, dist[i - w] + 1); if (x > 0) v = Math.min(v, dist[i - w - 1] + D2); if (x < w - 1) v = Math.min(v, dist[i - w + 1] + D2); }
+      dist[i] = v;
+    }
+    for (let y = h - 1; y >= 0; y--) for (let x = w - 1; x >= 0; x--) {
+      const i = y * w + x; let v = dist[i];
+      if (x < w - 1) v = Math.min(v, dist[i + 1] + 1);
+      if (y < h - 1) { v = Math.min(v, dist[i + w] + 1); if (x < w - 1) v = Math.min(v, dist[i + w + 1] + D2); if (x > 0) v = Math.min(v, dist[i + w - 1] + D2); }
+      dist[i] = v;
+    }
+    const rpx = Math.max(1, portrait.rand / k);
+    const bg = new Uint8Array(N), q = new Int32Array(N); let qh = 0, qt = 0;
+    const seed = (i) => { if (!bg[i] && dist[i] > rpx) { bg[i] = 1; q[qt++] = i; } };
+    for (let x = 0; x < w; x++) { seed(x); seed((h - 1) * w + x); }
+    for (let y = 0; y < h; y++) { seed(y * w); seed(y * w + w - 1); }
+    while (qh < qt) { const i = q[qh++], x = i % w; if (x > 0) seed(i - 1); if (x < w - 1) seed(i + 1); if (i >= w) seed(i - w); if (i < N - w) seed(i + w); }
+    let anyFig = false;
+    const fig = new Uint8Array(N); for (let i = 0; i < N; i++) { fig[i] = bg[i] ? 0 : 1; if (fig[i]) anyFig = true; }
+    if (!anyFig) return { empty: true };
+    // 3. beide maskers naar vectoren
+    const traceMask = (mask) => {
+      const im = new ImageData(w, h), o = im.data;
+      for (let i = 0, j = 0; i < N; i++, j += 4) { const v = mask[i] ? 0 : 255; o[j] = o[j + 1] = o[j + 2] = v; o[j + 3] = 255; }
+      const td = ImageTracer.imagedataToTracedata(im, { pathomit: 2, ltres: trace.smooth, qtres: trace.smooth, rightangleenhance: false, blurradius: 0, layering: 0, roundcoords: 2, colorsampling: 0, numberofcolors: 2, colorquantcycles: 1, pal: [{ r: 0, g: 0, b: 0, a: 255 }, { r: 255, g: 255, b: 255, a: 255 }] });
+      const li = td.palette.findIndex((c) => c.r < 128);
+      const polys = [];
+      for (const pth of td.layers[li] || []) {
+        const sg = pth.segments; if (!sg || !sg.length) continue;
+        const P = (x, y) => [trace.x + x * k, trace.y + y * k];
+        const sp = { start: P(sg[0].x1, sg[0].y1), segs: [], closed: true };
+        let cur = [sg[0].x1, sg[0].y1];
+        for (const g of sg) {
+          if (g.type === 'L') { sp.segs.push({ t: 'L', p: P(g.x2, g.y2) }); cur = [g.x2, g.y2]; }
+          else { sp.segs.push({ t: 'C', c1: P(cur[0] + (2 / 3) * (g.x2 - cur[0]), cur[1] + (2 / 3) * (g.y2 - cur[1])), c2: P(g.x3 + (2 / 3) * (g.x2 - g.x3), g.y3 + (2 / 3) * (g.y2 - g.y3)), p: P(g.x3, g.y3) }); cur = [g.x3, g.y3]; }
+        }
+        const pl = flattenSubpath(sp, 0.05).map((p) => ({ X: Math.round(p[0] * SC), Y: Math.round(p[1] * SC) }));
+        if (pl.length > 2) polys.push(pl);
+      }
+      return polys;
+    };
+    const boolop = (type, a, b, fa = C.PolyFillType.pftNonZero, fb = C.PolyFillType.pftNonZero) => { const c = new C.Clipper(); c.AddPaths(a, C.PolyType.ptSubject, true); if (b) c.AddPaths(b, C.PolyType.ptClip, true); const out = new C.Paths(); c.Execute(type, out, fa, fb); return out; };
+    const offset = (paths, dd) => { const o = new C.ClipperOffset(2, 0.03 * SC); o.AddPaths(paths, C.JoinType.jtRound, C.EndType.etClosedPolygon); const out = new C.Paths(); o.Execute(out, dd * SC); return out; };
+    const D = boolop(C.ClipType.ctUnion, traceMask(dark), null, C.PolyFillType.pftEvenOdd);
+    let F = boolop(C.ClipType.ctUnion, traceMask(fig), null, C.PolyFillType.pftEvenOdd);
+    F = offset(offset(F, 0.3), -0.3); // traptreden wat gladder
+    // 4. te dunne lijnen breder maken, anders verbranden of verdwijnen ze
+    let Dp = D;
+    if (portrait.minLine > 0) {
+      const r = portrait.minLine / 2;
+      const thin = boolop(C.ClipType.ctDifference, D, offset(offset(D, -r), r));
+      if (thin.length) Dp = boolop(C.ClipType.ctUnion, D, offset(thin, r * 0.8));
+    }
+    // 5. bovenlaag = figuur min lijnen; te smalle reepjes hout vallen weg
+    let T = boolop(C.ClipType.ctDifference, F, Dp);
+    if (portrait.minWood > 0) { const r = portrait.minWood / 2; T = offset(offset(T, -r), r); T = boolop(C.ClipType.ctIntersection, T, F); }
+    // 6. stukken: het grootste is de bovenlaag, de rest zijn losse stukjes
+    const piecesOf = (paths) => {
+      const c = new C.Clipper(); c.AddPaths(paths, C.PolyType.ptSubject, true);
+      const tree = new C.PolyTree(); c.Execute(C.ClipType.ctUnion, tree, C.PolyFillType.pftNonZero, C.PolyFillType.pftNonZero);
+      const out = [];
+      const walk = (node) => { for (const ch of node.Childs()) { if (ch.IsHole()) { walk(ch); continue; } const holes = ch.Childs().map((hh) => hh.Contour()); out.push({ outer: ch.Contour(), holes, area: C.Clipper.Area(ch.Contour()) + holes.reduce((a, hh) => a + C.Clipper.Area(hh), 0) }); for (const hh of ch.Childs()) walk(hh); } };
+      walk(tree);
+      return out;
+    };
+    let pcs = piecesOf(T);
+    if (!pcs.length) return { empty: true };
+    const minIsl = 4 * SC * SC; // kleiner dan 4 mm² lijm je niet terug
+    const mainOf = (ps) => ps.reduce((m, p) => (p.area > m.area ? p : m), ps[0]);
+    let main = mainOf(pcs);
+    pcs = pcs.filter((p) => p === main || p.area >= minIsl);
+    if (portrait.islands === 'drop') pcs = [main];
+    if (portrait.islands === 'bridge' && pcs.length > 1) {
+      const bw = portrait.bridge, rects = [];
+      // alle randen van de andere stukken als doelpunten (uitgedund)
+      const all = []; pcs.forEach((p, pi) => [p.outer, ...p.holes].forEach((ct) => ct.forEach((pt) => all.push(pi, pt.X, pt.Y))));
+      const stride = Math.max(1, Math.ceil(all.length / 3 / 60000)) * 3;
+      pcs.forEach((p, pi) => {
+        if (p === main) return;
+        const own = p.outer, st = Math.max(1, Math.floor(own.length / 80));
+        let best = Infinity, bp = null, bq = null;
+        for (let a = 0; a < own.length; a += st) {
+          const P0 = own[a];
+          for (let t = 0; t < all.length; t += stride) {
+            if (all[t] === pi) continue;
+            const dx = all[t + 1] - P0.X, dy = all[t + 2] - P0.Y, dd = dx * dx + dy * dy;
+            if (dd < best) { best = dd; bp = P0; bq = [all[t + 1], all[t + 2]]; }
+          }
+        }
+        if (!bp) return;
+        const L = Math.sqrt(best) || 1, ux = (bq[0] - bp.X) / L, uy = (bq[1] - bp.Y) / L, ex = 0.6 * SC, hw = bw / 2 * SC;
+        const ax = bp.X - ux * ex, ay = bp.Y - uy * ex, bx = bq[0] + ux * ex, by = bq[1] + uy * ex, nx = -uy * hw, ny = ux * hw;
+        let rc = [[ax + nx, ay + ny], [bx + nx, by + ny], [bx - nx, by - ny], [ax - nx, ay - ny]].map(([x, y]) => ({ X: Math.round(x), Y: Math.round(y) }));
+        if (!C.Clipper.Orientation(rc)) rc = rc.reverse();
+        rects.push(rc);
+      });
+      const kept = pcs.flatMap((p) => [p.outer, ...p.holes]);
+      pcs = piecesOf(boolop(C.ClipType.ctUnion, kept.concat(rects), null));
+      main = mainOf(pcs);
+    }
+    const toSub = (paths) => paths.filter((p) => p.length > 2).map((p) => ({ start: [p[0].X / SC, p[0].Y / SC], segs: p.slice(1).map((qq) => ({ t: 'L', p: [qq.X / SC, qq.Y / SC] })), closed: true }));
+    const outerSub = toSub([main.outer]);
+    const innerSub = toSub(pcs.flatMap((p) => (p === main ? p.holes : [p.outer, ...p.holes])));
+    const isl = pcs.filter((p) => p !== main);
+    const fb = subpathsBBox(outerSub, { x: trace.x, y: trace.y, w: 1, h: 1 });
+    const mg = portrait.margin;
+    const board = { x: fb.x - mg, y: fb.y - mg, w: fb.w + 2 * mg, h: fb.h + 2 * mg };
+    return { outerSub, innerSub, islandSub: toSub(isl.map((p) => p.outer)), islands: isl.length, board, thin: Dp !== D };
+  }
+  const rectSub = (r) => [{ start: [r.x, r.y], segs: [{ t: 'L', p: [r.x + r.w, r.y] }, { t: 'L', p: [r.x + r.w, r.y + r.h] }, { t: 'L', p: [r.x, r.y + r.h] }], closed: true }];
+  // naambordje: tekst gecentreerd, plaatje er ruim omheen, rechtsboven op de onderplaat
+  function portraitTag(board) {
+    const text = portrait.tagText.trim();
+    if (!portrait.tag || !text) return null;
+    const lines = text.split('\n').length;
+    const t = { id: nid(), role: 'vul', type: 'text', x: 0, y: 0, text, font: 'dancing', bold: false, italic: false, size: 7, anchor: 'middle', spacing: 0, lineHeight: 1.3, name: 'Namen' };
+    const tb = bbox(t);
+    const pad = 5, W = tb.w + 2 * pad, H = tb.h + 2 * pad;
+    const r = { x: board.x + board.w - W - 8, y: board.y + 8, w: W, h: H };
+    t.x += r.x + pad - tb.x; t.y += r.y + pad - tb.y;
+    void lines;
+    return { rect: r, text: t };
+  }
+  function drawPortraitPreview() {
+    const R = portrait.res;
+    if (!R || R.empty) {
+      if (trace.dataUrl) el('image', { x: trace.x, y: trace.y, width: trace.widthMm, height: trace.widthMm * trace.h / trace.w, href: trace.dataUrl, opacity: 0.35, preserveAspectRatio: 'none', 'pointer-events': 'none' }, canvas);
+      return;
+    }
+    const b = R.board;
+    el('rect', { x: b.x, y: b.y, width: b.w, height: b.h, fill: WOOD_DARK, 'pointer-events': 'none' }, canvas);
+    el('path', { d: svgPathD(R.outerSub.concat(R.innerSub)), 'fill-rule': 'evenodd', fill: WOOD_LIGHT, stroke: 'rgba(0,0,0,.45)', 'stroke-width': 0.6 / pxmm(), 'pointer-events': 'none', style: 'filter: drop-shadow(0.6px 0.8px 0.6px rgba(0,0,0,.55))' }, canvas);
+    if (portrait.islands === 'glue' && R.islandSub.length) el('path', { d: svgPathD(R.islandSub), fill: 'none', stroke: '#ff7a00', 'stroke-width': 1.6 / pxmm(), 'pointer-events': 'none' }, canvas);
+    const tg = portraitTag(b);
+    if (tg) {
+      el('rect', { x: tg.rect.x, y: tg.rect.y, width: tg.rect.w, height: tg.rect.h, rx: 1, fill: WOOD_LIGHT, stroke: 'rgba(0,0,0,.45)', 'stroke-width': 0.6 / pxmm(), 'pointer-events': 'none', style: 'filter: drop-shadow(0.6px 0.8px 0.6px rgba(0,0,0,.55))' }, canvas);
+      el('path', { d: svgPathD(textSubpaths(tg.text)), fill: '#3b2a1e', 'pointer-events': 'none' }, canvas);
+    }
+  }
+  function applyPortrait() {
+    const R = portrait.res;
+    if (!R || R.empty) return;
+    snapshot();
+    const b = R.board, gap = 5, tg = portraitTag(b);
+    const others = state.items.filter((i) => !isHidden(i));
+    const y0 = others.length ? Math.ceil(selBBox(others).y + selBBox(others).h + gap) : 2;
+    // vakjes: onderplaat, bovenlaag (zelfde maat), naambordje
+    const cells = [{ w: b.w, h: b.h }, { w: b.w, h: b.h }].concat(tg ? [{ w: tg.rect.w, h: tg.rect.h }] : []);
+    let cx = 2, cy = y0, rowH = 0, maxW = 0;
+    const pos = cells.map((c) => { if (cx > 2 && cx + c.w > Math.max(state.sheet.w, b.w + 4) - 2) { cx = 2; cy += rowH + gap; rowH = 0; } const p = [cx, cy]; cx += c.w + gap; rowH = Math.max(rowH, c.h); maxW = Math.max(maxW, cx - gap); return p; });
+    const needW = maxW + 2, needH = cy + rowH + 2;
+    let grown = false;
+    if (needW > state.sheet.w || needH > state.sheet.h) { state.sheet = { w: Math.ceil(Math.max(state.sheet.w, needW)), h: Math.ceil(Math.max(state.sheet.h, needH)) }; grown = true; syncSheetInputs(); }
+    const sid = 's' + Date.now().toString(36), n = tg ? 3 : 2;
+    const mv = (sps, dx, dy) => mapSubpaths(sps, (q) => [q[0] + dx, q[1] + dy]);
+    const made = [];
+    // onderplaat
+    let dx = pos[0][0] - b.x, dy = pos[0][1] - b.y;
+    made.push({ id: nid(), role: 'buiten', type: 'path', name: 'Onderplaat (donker hout)', layerColor: WOOD_DARK, stack: { id: sid, k: 0, n }, stackRef: [dx, dy], subpaths: mv(rectSub(b), dx, dy) });
+    // bovenlaag: eerst de lijnen (gat), dan de buitenrand
+    dx = pos[1][0] - b.x; dy = pos[1][1] - b.y;
+    const g1 = newGid();
+    if (R.innerSub.length) made.push({ id: nid(), role: 'binnen', type: 'path', evenodd: true, group: g1, name: 'Bovenlaag: lijnen', layerColor: WOOD_LIGHT, stack: { id: sid, k: 1, n }, stackRef: [dx, dy], subpaths: mv(R.innerSub, dx, dy) });
+    made.push({ id: nid(), role: 'buiten', type: 'path', group: g1, name: 'Bovenlaag: buitenrand (licht hout)', layerColor: WOOD_LIGHT, stack: { id: sid, k: 1, n }, stackRef: [dx, dy], subpaths: mv(R.outerSub, dx, dy) });
+    if (tg) {
+      dx = pos[2][0] - tg.rect.x; dy = pos[2][1] - tg.rect.y;
+      const g2 = newGid();
+      made.push({ id: nid(), role: 'buiten', type: 'path', group: g2, name: 'Naambordje', layerColor: WOOD_LIGHT, stack: { id: sid, k: 2, n }, stackRef: [dx, dy], subpaths: mv(rectSub(tg.rect), dx, dy) });
+      made.push(Object.assign(tg.text, { group: g2, x: tg.text.x + dx, y: tg.text.y + dy, stack: { id: sid, k: 2, n }, stackRef: [dx, dy] }));
+    }
+    state.items.push(...made);
+    state.sel = made[0].id; state.multi = made.slice(1).map((m) => m.id);
+    const nIsl = portrait.islands === 'glue' ? R.islands : 0;
+    trace.active = false; trace.src = null; trace.layers = []; portrait.res = null;
+    fit();
+    setTimeout(() => { pvMode = 'stack'; pvStack = sid; showPreview(); }, 50);
+    toast(`Portretbord geplaatst: onderplaat, bovenlaag${tg ? ' en naambordje' : ''}.` + (nIsl ? ` ${nIsl} losse stukjes snij je mee en lijm je terug op hun plek.` : '') + (grown ? ` De plaat is vergroot tot ${state.sheet.w} × ${state.sheet.h} mm.` : ''));
+  }
+  function renderPortraitPanel(head) {
+    head.innerHTML = '<span class="kind">Functie</span><span class="name">Portretbord</span><span class="explain">Gebruik een zwart-witte lijntekening, bv. van je foto gemaakt met een AI-tool. De zwarte lijnen worden uitgesneden: zo zie je de donkere onderplaat erdoor.</span>';
+    const wrap = document.createElement('div'); wrap.style.display = 'grid'; wrap.style.gap = '12px';
+    const R = portrait.res;
+    const range = (id, label, min, max, step, get, set, fmt = (v) => String(v).replace('.', ',')) => {
+      const l = document.createElement('label'); l.className = 'field'; l.htmlFor = id;
+      const top = document.createElement('span'); top.textContent = `${label}: ${fmt(get())}`;
+      const r = document.createElement('input'); r.type = 'range'; r.id = id; r.min = min; r.max = max; r.step = step; r.value = get();
+      r.addEventListener('input', () => { set(parseFloat(r.value)); top.textContent = `${label}: ${fmt(get())}`; schedulePortrait(); });
+      l.append(top, r); return l;
+    };
+    const main = document.createElement('div'); main.className = 'group';
+    main.append(
+      range('pt_thr', 'Hoeveel wordt lijn', 40, 230, 1, () => portrait.thr, (v) => { portrait.thr = v; }, (v) => (v < 100 ? 'alleen het zwartste' : v > 170 ? 'ook grijs' : 'normaal')),
+      range('pt_rand', 'Lichte rand rond de figuren', 0, 12, 0.5, () => portrait.rand, (v) => { portrait.rand = v; }, (v) => `${String(v).replace('.', ',')} mm`),
+    );
+    const sz = document.createElement('div'); sz.className = 'grid2';
+    sz.append(
+      numField('Breedte tekening (mm)', { id: 'pt_w', get: () => trace.widthMm, set: (v) => { trace.widthMm = Math.max(20, v); schedulePortrait(); } }, trace, 1, 20),
+      numField('Hoogte tekening (mm)', { id: 'pt_h', get: () => round(trace.widthMm * trace.h / trace.w), set: (v) => { trace.widthMm = Math.max(20, v * trace.w / trace.h); schedulePortrait(); } }, trace, 1, 20),
+    );
+    main.appendChild(sz);
+    // losse stukjes
+    const ig = document.createElement('div'); ig.className = 'group';
+    const it = document.createElement('div'); it.className = 'gl'; it.textContent = 'Losse stukjes (oranje omrand)';
+    const sel = document.createElement('select'); sel.id = 'pt_isl'; sel.setAttribute('aria-label', 'Wat met losse stukjes');
+    for (const [v, t] of [['glue', 'Meesnijden en terug inlijmen'], ['bridge', 'Vastzetten met brugjes'], ['drop', 'Weglaten (wordt donker)']]) sel.appendChild(new Option(t, v));
+    sel.value = portrait.islands;
+    sel.addEventListener('change', () => { portrait.islands = sel.value; runPortrait(); });
+    const ie = document.createElement('p'); ie.className = 'explain';
+    ie.textContent = !R || R.empty ? '' : R.islands ? `${R.islands} ${R.islands === 1 ? 'stukje ligt' : 'stukjes liggen'} los van de bovenlaag, bv. de binnenkant van een oog of een knoop.` : 'Geen losse stukjes: de bovenlaag is één geheel.';
+    ig.append(it, sel, ie);
+    // naambordje
+    const tg = document.createElement('div'); tg.className = 'group';
+    const tl = document.createElement('label'); tl.className = 'check';
+    const tc = document.createElement('input'); tc.type = 'checkbox'; tc.id = 'pt_tag'; tc.checked = portrait.tag;
+    tc.addEventListener('change', () => { portrait.tag = tc.checked; render(); });
+    tl.append(tc, document.createTextNode(' Naambordje erbij'));
+    tg.appendChild(tl);
+    if (portrait.tag) {
+      const ta = document.createElement('textarea'); ta.id = 'pt_text'; ta.rows = 2; ta.value = portrait.tagText; ta.setAttribute('aria-label', 'Tekst op het naambordje');
+      ta.style.width = '100%'; ta.style.font = 'inherit';
+      ta.addEventListener('input', () => { portrait.tagText = ta.value; renderCanvasOnly(); });
+      tg.appendChild(ta);
+    }
+    // meer instellingen
+    const more = document.createElement('div'); more.className = 'group';
+    const mt = document.createElement('div'); mt.className = 'gl'; mt.textContent = 'Meer instellingen';
+    const gr = document.createElement('div'); gr.className = 'grid2';
+    const nf = (label, id, key, step, min) => numField(label, { id, get: () => portrait[key], set: (v) => { portrait[key] = Math.max(min, v); schedulePortrait(); } }, portrait, step, min);
+    gr.append(nf('Dunste lijn (mm)', 'pt_ml', 'minLine', 0.1, 0), nf('Smalste hout (mm)', 'pt_mw', 'minWood', 0.1, 0), nf('Rand onderplaat (mm)', 'pt_mg', 'margin', 1, 0), nf('Breedte brugjes (mm)', 'pt_bw', 'bridge', 0.1, 0.4));
+    const me = document.createElement('p'); me.className = 'explain';
+    me.textContent = 'Dunste lijn: smallere sleufjes worden breder gemaakt, anders verbranden ze. Smalste hout: dunnere reepjes tussen twee lijnen breken af en worden weggelaten. Op 3 mm hout zijn 0,8 en 1 mm een goed begin.';
+    more.append(mt, gr, me, range('pt_sm', 'Gladheid', 0.2, 5, 0.1, () => trace.smooth, (v) => { trace.smooth = v; }));
+    const st = document.createElement('div'); st.className = 'cstat' + (R && R.empty ? ' bad' : '');
+    st.textContent = trace.busy ? 'Bezig met maken…' : !R ? 'Bezig…' : R.empty ? 'Geen tekening gevonden. Schuif "Hoeveel wordt lijn" naar rechts.' : `Onderplaat ${Math.round(R.board.w)} × ${Math.round(R.board.h)} mm.` + (R.thin ? ' Te dunne lijnen zijn breder gemaakt.' : '');
+    const row = document.createElement('div'); row.className = 'row';
+    const ok = document.createElement('button'); ok.className = 'btn primary'; ok.type = 'button'; ok.textContent = 'Op de plaat zetten'; ok.disabled = !R || R.empty || trace.busy;
+    ok.addEventListener('click', applyPortrait);
+    const no = document.createElement('button'); no.className = 'btn'; no.type = 'button'; no.textContent = 'Annuleren';
+    no.addEventListener('click', () => { portrait.res = null; cancelTrace(); });
+    row.append(ok, no);
+    wrap.append(main, ig, tg, st, row, fold(more, 'portraitmore', 'Dunste lijn, smalste hout, rand, brugjes'));
     props.appendChild(wrap);
   }
 
@@ -2688,16 +2979,17 @@ const APP = /*__APP__*/{ standalone: false };
     // voorbeeld van het omzetten van een afbeelding
     if (trace.active && (trace.dataUrl || trace.fromItems)) {
       const th = trace.widthMm * trace.h / trace.w;
-      if (trace.dataUrl) el('image', { x: trace.x, y: trace.y, width: trace.widthMm, height: th, href: trace.dataUrl, opacity: 0.3, preserveAspectRatio: 'none', 'pointer-events': 'none' }, canvas);
+      if (trace.mode === 'portrait') drawPortraitPreview(th);
+      else if (trace.dataUrl) el('image', { x: trace.x, y: trace.y, width: trace.widthMm, height: th, href: trace.dataUrl, opacity: 0.3, preserveAspectRatio: 'none', 'pointer-events': 'none' }, canvas);
       else el('rect', { x: trace.x - 50, y: trace.y - 50, width: trace.widthMm + 100, height: th + 100, fill: 'var(--board)', opacity: 0.92, 'pointer-events': 'none' }, canvas);
-      if (trace.mode === 'stack') {
+      if (trace.mode === 'portrait') { /* hierboven al getekend */ } else if (trace.mode === 'stack') {
         // zo ziet het eruit als alle lagen op elkaar liggen
         trace.stack.forEach((L, k) => el('path', { d: svgPathD(L.subpaths), 'fill-rule': 'evenodd', fill: L.color, 'fill-opacity': 1, stroke: 'rgba(0,0,0,.55)', 'stroke-width': 0.8 / pxmm(), 'pointer-events': 'none', style: `filter: drop-shadow(${0.35 * (k > 0)}px ${0.35 * (k > 0)}px 0.3px rgba(0,0,0,.45))` }, canvas));
       } else for (const l of traceOutputLayers()) {
         const r = ROLE[l.role];
         el('path', { d: svgPathD(l.subpaths), 'fill-rule': 'evenodd', fill: r.fill ? r.color : 'none', 'fill-opacity': r.fill ? 0.75 : 0, stroke: r.color, 'stroke-width': 1.2 / pxmm(), 'pointer-events': 'none' }, canvas);
       }
-      el('rect', { class: 'cprev', x: trace.x, y: trace.y, width: trace.widthMm, height: th, 'stroke-width': 1.5 / pxmm(), 'stroke-dasharray': `${5 / pxmm()} ${3 / pxmm()}` }, canvas);
+      if (trace.mode !== 'portrait') el('rect', { class: 'cprev', x: trace.x, y: trace.y, width: trace.widthMm, height: th, 'stroke-width': 1.5 / pxmm(), 'stroke-dasharray': `${5 / pxmm()} ${3 / pxmm()}` }, canvas);
     }
     // voorbeeld van de contour
     if (contour.active) {

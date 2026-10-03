@@ -58,9 +58,21 @@ export function textToPath(font, text, x, y, size, anchor = 'start', opts = {}) 
   const cmds = [];
   const bend = ((opts.bend || 0) * Math.PI) / 180; // boog: totale hoek van de regel in radialen
   String(text).split('\n').forEach((line, li) => {
-    const glyphs = Array.from(line).map((ch) => font.charToGlyph(ch));
+    // hartje: geen enkel lettertype heeft het, dus zelf tekenen
+    const heart = () => {
+      const H = fontSize * capRatio, W = H * 1.05;
+      const pts = [[0.5, 0.3], [0.5, 0.05, 0.1, -0.05, 0.02, 0.3], [-0.05, 0.6, 0.35, 0.8, 0.5, 1], [0.65, 0.8, 1.05, 0.6, 0.98, 0.3], [0.9, -0.05, 0.5, 0.05, 0.5, 0.3]];
+      return { fake: true, advanceWidth: (W + H * 0.25) / scale, getPath: (gx, gy) => {
+        const X = (u) => gx + H * 0.12 + u * W, Y = (v) => gy - H + v * H;
+        const c = [{ type: 'M', x: X(pts[0][0]), y: Y(pts[0][1]) }];
+        for (const q of pts.slice(1)) c.push({ type: 'C', x1: X(q[0]), y1: Y(q[1]), x2: X(q[2]), y2: Y(q[3]), x: X(q[4]), y: Y(q[5]) });
+        c.push({ type: 'Z' });
+        return { commands: c };
+      } };
+    };
+    const glyphs = Array.from(line).map((ch) => ((ch === '\u2665' || ch === '\u2764') && !font.charToGlyphIndex(ch) ? heart() : font.charToGlyph(ch)));
     const adv = glyphs.map((g, i) => {
-      const kern = i + 1 < glyphs.length ? font.getKerningValue(g, glyphs[i + 1]) : 0;
+      const kern = i + 1 < glyphs.length && !g.fake && !glyphs[i + 1].fake ? font.getKerningValue(g, glyphs[i + 1]) : 0;
       return ((g.advanceWidth || 0) + kern) * scale + (i + 1 < glyphs.length ? spacing : 0);
     });
     const width = adv.reduce((a, b) => a + b, 0);
