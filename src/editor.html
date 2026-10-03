@@ -992,7 +992,7 @@ const APP = /*__APP__*/{ standalone: false };
         active: true, src: ctx.getImageData(0, 0, c.width, c.height), w: c.width, h: c.height, dataUrl: c.toDataURL('image/png'),
         widthMm: Math.round(Math.min(100, state.sheet.w * 0.6)), name: f.name.replace(/\.[^.]+$/, ''), fills: [], stackOrder: [], fromItems: null,
       });
-      if (traceStartMode === 'portrait') { trace.widthMm = 200; trace.x = 10; trace.y = 10; portrait.res = null; }
+      if (traceStartMode === 'portrait') { trace.widthMm = 200; trace.x = 10; trace.y = 10; Object.assign(portrait, { res: null, photo: trace.src, bgSeeds: [], lineUrl: '', kind: looksLikeLineArt(trace.src) ? 'line' : 'photo' }); }
       if (traceStartMode) { trace.mode = traceStartMode; trace.roles = []; if (trace.mode === 'stack' && trace.colors < 4) trace.colors = 4; }
       trace.x = Math.round((state.sheet.w - trace.widthMm) / 2);
       trace.y = Math.max(0, Math.round((state.sheet.h - trace.widthMm * trace.h / trace.w) / 2));
@@ -1450,16 +1450,81 @@ const APP = /*__APP__*/{ standalone: false };
     props.appendChild(wrap);
   }
 
+  // ---------- Foto -> lijntekening (filter in de app, zonder AI) ----------
+  // Lijnen = randen waar het beeld donkerder wordt (verschil van twee vervagingen); donkere vlakken (haar, kleding) worden zwart.
+  function gaussBlur(src, w, h, sigma) {
+    if (sigma < 0.3) return Float32Array.from(src);
+    const r = Math.ceil(sigma * 2.5), ker = new Float32Array(2 * r + 1);
+    let sum = 0; for (let i = -r; i <= r; i++) { ker[i + r] = Math.exp(-(i * i) / (2 * sigma * sigma)); sum += ker[i + r]; }
+    for (let i = 0; i < ker.length; i++) ker[i] /= sum;
+    const tmp = new Float32Array(w * h), out = new Float32Array(w * h);
+    for (let y = 0; y < h; y++) { const o = y * w; for (let x = 0; x < w; x++) { let a = 0; for (let k = -r; k <= r; k++) { const xx = x + k < 0 ? 0 : x + k >= w ? w - 1 : x + k; a += src[o + xx] * ker[k + r]; } tmp[o + x] = a; } }
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) { let a = 0; for (let k = -r; k <= r; k++) { const yy = y + k < 0 ? 0 : y + k >= h ? h - 1 : y + k; a += tmp[yy * w + x] * ker[k + r]; } out[y * w + x] = a; }
+    return out;
+  }
+  function looksLikeLineArt(img) {
+    const d = img.data; let pure = 0, n = 0;
+    for (let j = 0; j < d.length; j += 16) { const g = 0.299 * d[j] + 0.587 * d[j + 1] + 0.114 * d[j + 2]; if (g < 70 || g > 200) pure++; n++; }
+    return pure / n > 0.88;
+  }
+  function photoToLines(img) {
+    const { width: w, height: h, data: d } = img, N = w * h, sc = Math.max(w, h) / 1000;
+    const G = new Float32Array(N), Rr = new Float32Array(N), Gg = new Float32Array(N), Bb = new Float32Array(N);
+    for (let i = 0, j = 0; i < N; i++, j += 4) { Rr[i] = d[j]; Gg[i] = d[j + 1]; Bb[i] = d[j + 2]; G[i] = (0.299 * d[j] + 0.587 * d[j + 1] + 0.114 * d[j + 2]) / 255; }
+    // achtergrond: aangeklikte plekken uitbreiden over gelijkaardige kleuren
+    const bg = new Uint8Array(N);
+    if (portrait.bgSeeds.length) {
+      const sR = gaussBlur(Rr, w, h, 2 * sc), sG = gaussBlur(Gg, w, h, 2 * sc), sB = gaussBlur(Bb, w, h, 2 * sc);
+      const tol = portrait.bgTol * 2.2, q = new Int32Array(N);
+      for (const [fx, fy] of portrait.bgSeeds) {
+        const s0 = Math.min(N - 1, Math.max(0, Math.round(fy * (h - 1)) * w + Math.round(fx * (w - 1))));
+        const r0 = sR[s0], g0 = sG[s0], b0 = sB[s0];
+        let qh = 0, qt = 0;
+        const add = (i) => { if (bg[i] === 2) return; const dr = sR[i] - r0, dg = sG[i] - g0, db = sB[i] - b0; if (dr * dr + dg * dg + db * db <= tol * tol) { bg[i] = 2; q[qt++] = i; } };
+        add(s0);
+        while (qh < qt) { const i = q[qh++], x = i % w; if (x > 0) add(i - 1); if (x < w - 1) add(i + 1); if (i >= w) add(i - w); if (i < N - w) add(i + w); }
+      }
+    }
+    // XDoG: eerst ruis weg, dan lijnen waar het beeld donkerder wordt dan de omgeving
+    const s = portrait.lineSize * 1.25 * sc;
+    const S0 = gaussBlur(G, w, h, Math.max(0.6, sc));
+    const g1 = gaussBlur(S0, w, h, s), g2 = gaussBlur(S0, w, h, s * 1.6), g3 = gaussBlur(G, w, h, s * 2);
+    const eps = -(0.002 + (100 - portrait.lineAmt) * 0.00016), dark = (portrait.darkAmt / 100) * 0.45;
+    const ink = new Uint8Array(N);
+    for (let i = 0; i < N; i++) { if (bg[i]) continue; ink[i] = g1[i] - 0.99 * g2[i] < eps || g3[i] < dark ? 1 : 0; }
+    portrait.bgMask = portrait.bgSeeds.length ? bg : null;
+    // losse puntjes weg
+    const minPx = Math.round(30 * sc * sc), seen = new Uint8Array(N), q2 = new Int32Array(N);
+    for (let i0 = 0; i0 < N; i0++) {
+      if (!ink[i0] || seen[i0]) continue;
+      let qh = 0, qt = 0; seen[i0] = 1; q2[qt++] = i0;
+      while (qh < qt) { const i = q2[qh++], x = i % w; for (const j of [x > 0 ? i - 1 : -1, x < w - 1 ? i + 1 : -1, i - w, i + w]) if (j >= 0 && j < N && ink[j] && !seen[j]) { seen[j] = 1; q2[qt++] = j; } }
+      if (qt < minPx) for (let k = 0; k < qt; k++) ink[q2[k]] = 0;
+    }
+    const out = new ImageData(w, h), o = out.data;
+    for (let i = 0, j = 0; i < N; i++, j += 4) { const v = ink[i] ? 0 : 255; o[j] = o[j + 1] = o[j + 2] = v; o[j + 3] = 255; }
+    return out;
+  }
+
   // ---------- Portretbord: lijntekening uitsnijden in licht hout op een donkere onderplaat ----------
   // De zwarte lijnen worden sleufjes door de bovenlaag; je kijkt erdoor op de donkere onderplaat.
-  const portrait = { thr: 128, rand: 4, minLine: 0.8, minWood: 1, margin: 15, islands: 'glue', bridge: 1.2, tag: true, tagText: 'Naam ♥ Naam', res: null };
+  const portrait = { thr: 128, rand: 4, minLine: 0.8, minWood: 1, margin: 15, islands: 'glue', bridge: 1.2, tag: true, tagText: 'Naam \u2665 Naam', res: null,
+    // foto-modus
+    kind: 'line', photo: null, lineUrl: '', lineSize: 2, lineAmt: 50, darkAmt: 35, bgSeeds: [], bgTol: 12 };
   const WOOD_DARK = '#4a2f22', WOOD_LIGHT = '#e9d8b4';
   let portraitTimer = null;
   function schedulePortrait() { clearTimeout(portraitTimer); portraitTimer = setTimeout(runPortrait, 250); }
   function runPortrait() {
     trace.busy = true; render();
     setTimeout(() => {
-      try { portrait.res = buildPortrait(); } catch (err) { console.error(err); portrait.res = null; toast('Het portretbord kon niet gemaakt worden met deze tekening.'); }
+      try {
+        if (portrait.kind === 'photo' && portrait.photo) {
+          trace.src = photoToLines(portrait.photo);
+          const c = document.createElement('canvas'); c.width = trace.w; c.height = trace.h; c.getContext('2d').putImageData(trace.src, 0, 0);
+          portrait.lineUrl = c.toDataURL('image/png');
+        } else if (portrait.photo) { trace.src = portrait.photo; portrait.lineUrl = ''; }
+        portrait.res = buildPortrait();
+      } catch (err) { console.error(err); portrait.res = null; toast('Het portretbord kon niet gemaakt worden met deze tekening.'); }
       trace.busy = false; render();
     }, 20);
   }
@@ -1472,9 +1537,10 @@ const APP = /*__APP__*/{ standalone: false };
     const dark = new Uint8Array(N);
     for (let i = 0, j = 0; i < N; i++, j += 4) dark[i] = 0.299 * d[j] + 0.587 * d[j + 1] + 0.114 * d[j + 2] < portrait.thr ? 1 : 0;
     // 2. figuur = alles wat niet bij de achtergrond hoort; de lijnen eerst 'rand' dikker, dan sluiten kleine openingen ook
-    const dist = new Float32Array(N);
-    for (let i = 0; i < N; i++) dist[i] = dark[i] ? 0 : 1e9;
     const D2 = Math.SQRT2;
+    const distFrom = (src) => {
+    const dist = new Float32Array(N);
+    for (let i = 0; i < N; i++) dist[i] = src[i] ? 0 : 1e9;
     for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
       const i = y * w + x; let v = dist[i];
       if (x > 0) v = Math.min(v, dist[i - 1] + 1);
@@ -1487,15 +1553,36 @@ const APP = /*__APP__*/{ standalone: false };
       if (y < h - 1) { v = Math.min(v, dist[i + w] + 1); if (x < w - 1) v = Math.min(v, dist[i + w + 1] + D2); if (x > 0) v = Math.min(v, dist[i + w - 1] + D2); }
       dist[i] = v;
     }
+    return dist;
+    };
     const rpx = Math.max(1, portrait.rand / k);
+    let fig;
+    if (portrait.kind === 'photo') {
+      // foto: alles behalve de aangeklikte achtergrond, met de lichte rand eromheen
+      const keep = new Uint8Array(N); for (let i = 0; i < N; i++) keep[i] = portrait.bgMask && portrait.bgMask[i] ? 0 : 1;
+      // losse restjes figuur weg en kleine gaatjes achtergrond dicht (kleiner dan 1% van de foto)
+      const comps = (val, minSize, setTo) => {
+        const seen = new Uint8Array(N), q = new Int32Array(N);
+        for (let i0 = 0; i0 < N; i0++) {
+          if (keep[i0] !== val || seen[i0]) continue;
+          let qh = 0, qt = 0, edge = false; seen[i0] = 1; q[qt++] = i0;
+          while (qh < qt) { const i = q[qh++], x = i % w; if (x === 0 || x === w - 1 || i < w || i >= N - w) edge = true; for (const j of [x > 0 ? i - 1 : -1, x < w - 1 ? i + 1 : -1, i - w, i + w]) if (j >= 0 && j < N && keep[j] === val && !seen[j]) { seen[j] = 1; q[qt++] = j; } }
+          if (qt < minSize && (val === 1 || !edge)) for (let t = 0; t < qt; t++) keep[q[t]] = setTo;
+        }
+      };
+      if (portrait.bgMask) { comps(1, N * 0.01, 0); comps(0, N * 0.01, 1); }
+      const dk = distFrom(keep);
+      fig = new Uint8Array(N); for (let i = 0; i < N; i++) fig[i] = dk[i] <= rpx ? 1 : 0;
+    } else {
+    const dist = distFrom(dark);
     const bg = new Uint8Array(N), q = new Int32Array(N); let qh = 0, qt = 0;
     const seed = (i) => { if (!bg[i] && dist[i] > rpx) { bg[i] = 1; q[qt++] = i; } };
     for (let x = 0; x < w; x++) { seed(x); seed((h - 1) * w + x); }
     for (let y = 0; y < h; y++) { seed(y * w); seed(y * w + w - 1); }
     while (qh < qt) { const i = q[qh++], x = i % w; if (x > 0) seed(i - 1); if (x < w - 1) seed(i + 1); if (i >= w) seed(i - w); if (i < N - w) seed(i + w); }
-    let anyFig = false;
-    const fig = new Uint8Array(N); for (let i = 0; i < N; i++) { fig[i] = bg[i] ? 0 : 1; if (fig[i]) anyFig = true; }
-    if (!anyFig) return { empty: true };
+    fig = new Uint8Array(N); for (let i = 0; i < N; i++) fig[i] = bg[i] ? 0 : 1;
+    }
+    if (!fig.some((v) => v)) return { empty: true };
     // 3. beide maskers naar vectoren
     const traceMask = (mask) => {
       const im = new ImageData(w, h), o = im.data;
@@ -1655,7 +1742,7 @@ const APP = /*__APP__*/{ standalone: false };
     toast(`Portretbord geplaatst: onderplaat, bovenlaag${tg ? ' en naambordje' : ''}.` + (nIsl ? ` ${nIsl} losse stukjes snij je mee en lijm je terug op hun plek.` : '') + (grown ? ` De plaat is vergroot tot ${state.sheet.w} × ${state.sheet.h} mm.` : ''));
   }
   function renderPortraitPanel(head) {
-    head.innerHTML = '<span class="kind">Functie</span><span class="name">Portretbord</span><span class="explain">Gebruik een zwart-witte lijntekening, bv. van je foto gemaakt met een AI-tool. De zwarte lijnen worden uitgesneden: zo zie je de donkere onderplaat erdoor.</span>';
+    head.innerHTML = '<span class="kind">Functie</span><span class="name">Portretbord</span><span class="explain">De zwarte lijnen worden uitgesneden: zo zie je de donkere onderplaat erdoor. Werkt met een foto of met een lijntekening.</span>';
     const wrap = document.createElement('div'); wrap.style.display = 'grid'; wrap.style.gap = '12px';
     const R = portrait.res;
     const range = (id, label, min, max, step, get, set, fmt = (v) => String(v).replace('.', ',')) => {
@@ -1665,9 +1752,41 @@ const APP = /*__APP__*/{ standalone: false };
       r.addEventListener('input', () => { set(parseFloat(r.value)); top.textContent = `${label}: ${fmt(get())}`; schedulePortrait(); });
       l.append(top, r); return l;
     };
+    const kind = document.createElement('div'); kind.className = 'seg'; kind.setAttribute('role', 'group');
+    for (const [v, t] of [['photo', 'Foto'], ['line', 'Lijntekening']]) {
+      const b = document.createElement('button'); b.type = 'button'; b.className = 'segbtn'; b.textContent = t;
+      b.setAttribute('aria-pressed', String(portrait.kind === v));
+      b.addEventListener('click', () => { portrait.kind = v; runPortrait(); });
+      kind.appendChild(b);
+    }
+    let photoG = null;
+    if (portrait.kind === 'photo') {
+      photoG = document.createElement('div'); photoG.className = 'group';
+      const pt = document.createElement('div'); pt.className = 'gl'; pt.textContent = 'Van foto naar tekening';
+      photoG.appendChild(pt);
+      if (portrait.lineUrl) { const im = document.createElement('img'); im.src = portrait.lineUrl; im.alt = 'Lijntekening gemaakt van je foto'; im.style.cssText = 'width:100%;border:1px solid var(--line);border-radius:6px;background:#fff'; photoG.appendChild(im); }
+      photoG.append(
+        range('pt_ls', 'Dikte van de lijnen', 1, 5, 0.5, () => portrait.lineSize, (v) => { portrait.lineSize = v; }, (v) => (v <= 1.5 ? 'fijn' : v >= 3.5 ? 'dik' : 'normaal')),
+        range('pt_la', 'Aantal lijnen', 0, 100, 5, () => portrait.lineAmt, (v) => { portrait.lineAmt = v; }, (v) => (v < 35 ? 'weinig' : v > 65 ? 'veel' : 'normaal')),
+        range('pt_da', 'Donkere vlakken zwart (haar, kleding)', 0, 100, 5, () => portrait.darkAmt, (v) => { portrait.darkAmt = v; }, (v) => (v < 20 ? 'bijna niets' : v > 60 ? 'veel' : 'normaal')),
+      );
+      const bt = document.createElement('div'); bt.className = 'cstat';
+      bt.textContent = portrait.bgSeeds.length ? `Achtergrond: ${portrait.bgSeeds.length}× aangeklikt. Klik verder op wat nog weg moet.` : 'Klik op de plaat op de achtergrond van je foto om die weg te halen.';
+      photoG.appendChild(bt);
+      if (portrait.bgSeeds.length) {
+        photoG.appendChild(range('pt_tol', 'Hoe ver de achtergrond doorloopt', 2, 40, 1, () => portrait.bgTol, (v) => { portrait.bgTol = v; }, (v) => (v < 8 ? 'weinig' : v > 22 ? 'veel' : 'normaal')));
+        const r2 = document.createElement('div'); r2.className = 'row';
+        const un = document.createElement('button'); un.type = 'button'; un.className = 'btn'; un.textContent = 'Laatste klik ongedaan maken';
+        un.addEventListener('click', () => { portrait.bgSeeds.pop(); runPortrait(); });
+        const cl = document.createElement('button'); cl.type = 'button'; cl.className = 'btn'; cl.textContent = 'Alles terug';
+        cl.addEventListener('click', () => { portrait.bgSeeds = []; runPortrait(); });
+        r2.append(un, cl); photoG.appendChild(r2);
+      }
+    }
     const main = document.createElement('div'); main.className = 'group';
+    if (portrait.kind === 'line') main.append(
+      range('pt_thr', 'Hoeveel wordt lijn', 40, 230, 1, () => portrait.thr, (v) => { portrait.thr = v; }, (v) => (v < 100 ? 'alleen het zwartste' : v > 170 ? 'ook grijs' : 'normaal')));
     main.append(
-      range('pt_thr', 'Hoeveel wordt lijn', 40, 230, 1, () => portrait.thr, (v) => { portrait.thr = v; }, (v) => (v < 100 ? 'alleen het zwartste' : v > 170 ? 'ook grijs' : 'normaal')),
       range('pt_rand', 'Lichte rand rond de figuren', 0, 12, 0.5, () => portrait.rand, (v) => { portrait.rand = v; }, (v) => `${String(v).replace('.', ',')} mm`),
     );
     const sz = document.createElement('div'); sz.className = 'grid2';
@@ -1716,7 +1835,7 @@ const APP = /*__APP__*/{ standalone: false };
     const no = document.createElement('button'); no.className = 'btn'; no.type = 'button'; no.textContent = 'Annuleren';
     no.addEventListener('click', () => { portrait.res = null; cancelTrace(); });
     row.append(ok, no);
-    wrap.append(main, ig, tg, st, row, fold(more, 'portraitmore', 'Dunste lijn, smalste hout, rand, brugjes'));
+    wrap.append(...[kind, photoG, main, ig, tg, st, row].filter(Boolean), fold(more, 'portraitmore', 'Dunste lijn, smalste hout, rand, brugjes'));
     props.appendChild(wrap);
   }
 
@@ -3698,6 +3817,10 @@ const APP = /*__APP__*/{ standalone: false };
       return;
     }
     // gelaagd kunstwerk: klik op een vlek of gaatje om het op te vullen met de kleur eromheen
+    if (trace.active && trace.mode === 'portrait' && portrait.kind === 'photo' && !trace.busy && !(spaceDown || e.button === 1)) {
+      const fx = (p.x - trace.x) / trace.widthMm, fy = (p.y - trace.y) / (trace.widthMm * trace.h / trace.w);
+      if (fx >= 0 && fx <= 1 && fy >= 0 && fy <= 1) { portrait.bgSeeds.push([fx, fy]); runPortrait(); return; }
+    }
     if (trace.active && trace.mode === 'stack' && trace.stack.length && !(spaceDown || e.button === 1)) {
       const th = trace.widthMm * trace.h / trace.w;
       const fx = (p.x - trace.x) / trace.widthMm, fy = (p.y - trace.y) / th;
