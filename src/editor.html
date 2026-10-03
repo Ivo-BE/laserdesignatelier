@@ -1467,40 +1467,80 @@ const APP = /*__APP__*/{ standalone: false };
     for (let j = 0; j < d.length; j += 16) { const g = 0.299 * d[j] + 0.587 * d[j + 1] + 0.114 * d[j + 2]; if (g < 70 || g > 200) pure++; n++; }
     return pure / n > 0.88;
   }
+  // randbewarend vervagen (bilateraal filter): vlakken worden egaal, randen blijven scherp. Eén keer per foto, daarna uit de cache.
+  let bilCache = { img: null, key: '', out: null };
+  function bilateral(img, iters, r, sr) {
+    const key = `${iters}|${r}|${sr}`;
+    if (bilCache.img === img && bilCache.key === key) return bilCache.out;
+    const { width: w, height: h, data: d } = img, N = w * h;
+    let R = new Float32Array(N), Gc = new Float32Array(N), B = new Float32Array(N);
+    for (let i = 0, j = 0; i < N; i++, j += 4) { R[i] = d[j] / 255; Gc[i] = d[j + 1] / 255; B[i] = d[j + 2] / 255; }
+    const ss = r / 1.5, sw = [], off = [];
+    for (let dy = -r; dy <= r; dy++) for (let dx = -r; dx <= r; dx++) { if (dx * dx + dy * dy > r * r) continue; sw.push(Math.exp(-(dx * dx + dy * dy) / (2 * ss * ss))); off.push([dx, dy]); }
+    const LUT = new Float32Array(3001); for (let i = 0; i <= 3000; i++) LUT[i] = Math.exp(-(i / 1000) / (2 * sr * sr));
+    for (let it = 0; it < iters; it++) {
+      const R2 = new Float32Array(N), G2 = new Float32Array(N), B2 = new Float32Array(N);
+      for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+        const i = y * w + x, r0 = R[i], g0 = Gc[i], b0 = B[i];
+        let ws = 0, ar = 0, ag = 0, ab = 0;
+        for (let k = 0; k < off.length; k++) {
+          let xx = x + off[k][0], yy = y + off[k][1];
+          if (xx < 0) xx = 0; else if (xx >= w) xx = w - 1;
+          if (yy < 0) yy = 0; else if (yy >= h) yy = h - 1;
+          const j = yy * w + xx, dr = R[j] - r0, dg = Gc[j] - g0, db = B[j] - b0;
+          const wt = sw[k] * LUT[Math.min(3000, ((dr * dr + dg * dg + db * db) * 1000) | 0)];
+          ws += wt; ar += R[j] * wt; ag += Gc[j] * wt; ab += B[j] * wt;
+        }
+        R2[i] = ar / ws; G2[i] = ag / ws; B2[i] = ab / ws;
+      }
+      R = R2; Gc = G2; B = B2;
+    }
+    bilCache = { img, key, out: { R, G: Gc, B } };
+    return bilCache.out;
+  }
+  // kleine losse vlekjes (val=1 zwart, val=0 wit) kleiner dan minSize pixels omzetten
+  function dropSmall(mask, w, h, val, minSize) {
+    const N = w * h, seen = new Uint8Array(N), q = new Int32Array(N);
+    for (let i0 = 0; i0 < N; i0++) {
+      if (mask[i0] !== val || seen[i0]) continue;
+      let qh = 0, qt = 0; seen[i0] = 1; q[qt++] = i0;
+      while (qh < qt && qt < minSize + 1) { const i = q[qh++], x = i % w; for (const j of [x > 0 ? i - 1 : -1, x < w - 1 ? i + 1 : -1, i - w, i + w]) if (j >= 0 && j < N && mask[j] === val && !seen[j]) { seen[j] = 1; q[qt++] = j; } }
+      if (qt <= minSize) for (let k = 0; k < qt; k++) mask[q[k]] = 1 - val;
+      else while (qh < qt) { const i = q[qh++], x = i % w; for (const j of [x > 0 ? i - 1 : -1, x < w - 1 ? i + 1 : -1, i - w, i + w]) if (j >= 0 && j < N && mask[j] === val && !seen[j]) { seen[j] = 1; q[qt++] = j; } }
+    }
+  }
   function photoToLines(img) {
-    const { width: w, height: h, data: d } = img, N = w * h, sc = Math.max(w, h) / 1000;
-    const G = new Float32Array(N), Rr = new Float32Array(N), Gg = new Float32Array(N), Bb = new Float32Array(N);
-    for (let i = 0, j = 0; i < N; i++, j += 4) { Rr[i] = d[j]; Gg[i] = d[j + 1]; Bb[i] = d[j + 2]; G[i] = (0.299 * d[j] + 0.587 * d[j + 1] + 0.114 * d[j + 2]) / 255; }
-    // achtergrond: aangeklikte plekken uitbreiden over gelijkaardige kleuren
+    const { width: w, height: h } = img, N = w * h, sc = Math.max(w, h) / 1000;
+    // 1. randbewarend egaal maken: huid, kleding en achtergrond worden vlakken zonder korrel
+    const S = bilateral(img, 4, Math.max(2, Math.round(4 * sc)), 0.1);
+    const G = new Float32Array(N);
+    for (let i = 0; i < N; i++) G[i] = 0.299 * S.R[i] + 0.587 * S.G[i] + 0.114 * S.B[i];
+    // 2. achtergrond: aangeklikte plekken uitbreiden over gelijkaardige kleuren
     const bg = new Uint8Array(N);
     if (portrait.bgSeeds.length) {
-      const sR = gaussBlur(Rr, w, h, 2 * sc), sG = gaussBlur(Gg, w, h, 2 * sc), sB = gaussBlur(Bb, w, h, 2 * sc);
-      const tol = portrait.bgTol * 2.2, q = new Int32Array(N);
+      const tol = (portrait.bgTol * 2.2) / 255, q = new Int32Array(N);
       for (const [fx, fy] of portrait.bgSeeds) {
         const s0 = Math.min(N - 1, Math.max(0, Math.round(fy * (h - 1)) * w + Math.round(fx * (w - 1))));
-        const r0 = sR[s0], g0 = sG[s0], b0 = sB[s0];
+        const r0 = S.R[s0], g0 = S.G[s0], b0 = S.B[s0];
         let qh = 0, qt = 0;
-        const add = (i) => { if (bg[i] === 2) return; const dr = sR[i] - r0, dg = sG[i] - g0, db = sB[i] - b0; if (dr * dr + dg * dg + db * db <= tol * tol) { bg[i] = 2; q[qt++] = i; } };
+        const add = (i) => { if (bg[i] === 2) return; const dr = S.R[i] - r0, dg = S.G[i] - g0, db = S.B[i] - b0; if (dr * dr + dg * dg + db * db <= tol * tol) { bg[i] = 2; q[qt++] = i; } };
         add(s0);
         while (qh < qt) { const i = q[qh++], x = i % w; if (x > 0) add(i - 1); if (x < w - 1) add(i + 1); if (i >= w) add(i - w); if (i < N - w) add(i + w); }
       }
     }
-    // XDoG: eerst ruis weg, dan lijnen waar het beeld donkerder wordt dan de omgeving
-    const s = portrait.lineSize * 1.25 * sc;
-    const S0 = gaussBlur(G, w, h, Math.max(0.6, sc));
-    const g1 = gaussBlur(S0, w, h, s), g2 = gaussBlur(S0, w, h, s * 1.6), g3 = gaussBlur(G, w, h, s * 2);
-    const eps = -(0.002 + (100 - portrait.lineAmt) * 0.00016), dark = (portrait.darkAmt / 100) * 0.45;
-    const ink = new Uint8Array(N);
+    // 3. lijnen (XDoG) en donkere vlakken
+    const s = portrait.lineSize * sc;
+    const g1 = gaussBlur(G, w, h, s), g2 = gaussBlur(G, w, h, s * 1.6), g3 = gaussBlur(G, w, h, 3 * sc);
+    const eps = -(0.004 + (100 - portrait.lineAmt) * 0.00016), dark = (portrait.darkAmt / 100) * 0.45;
+    let ink = new Uint8Array(N);
     for (let i = 0; i < N; i++) { if (bg[i]) continue; ink[i] = g1[i] - 0.99 * g2[i] < eps || g3[i] < dark ? 1 : 0; }
+    // 4. opkuisen: losse vlekjes en gaatjes weg, randen glad (strak als een stripfiguur)
+    dropSmall(ink, w, h, 1, Math.round(150 * sc * sc));
+    dropSmall(ink, w, h, 0, Math.round(40 * sc * sc));
+    const f = new Float32Array(N); for (let i = 0; i < N; i++) f[i] = ink[i];
+    const sm = gaussBlur(f, w, h, 1.5 * sc);
+    for (let i = 0; i < N; i++) ink[i] = sm[i] > 0.5 && !bg[i] ? 1 : 0;
     portrait.bgMask = portrait.bgSeeds.length ? bg : null;
-    // losse puntjes weg
-    const minPx = Math.round(30 * sc * sc), seen = new Uint8Array(N), q2 = new Int32Array(N);
-    for (let i0 = 0; i0 < N; i0++) {
-      if (!ink[i0] || seen[i0]) continue;
-      let qh = 0, qt = 0; seen[i0] = 1; q2[qt++] = i0;
-      while (qh < qt) { const i = q2[qh++], x = i % w; for (const j of [x > 0 ? i - 1 : -1, x < w - 1 ? i + 1 : -1, i - w, i + w]) if (j >= 0 && j < N && ink[j] && !seen[j]) { seen[j] = 1; q2[qt++] = j; } }
-      if (qt < minPx) for (let k = 0; k < qt; k++) ink[q2[k]] = 0;
-    }
     const out = new ImageData(w, h), o = out.data;
     for (let i = 0, j = 0; i < N; i++, j += 4) { const v = ink[i] ? 0 : 255; o[j] = o[j + 1] = o[j + 2] = v; o[j + 3] = 255; }
     return out;
