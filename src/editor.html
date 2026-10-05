@@ -1039,7 +1039,7 @@ const APP = /*__APP__*/{ standalone: false };
         active: true, src: ctx.getImageData(0, 0, c.width, c.height), w: c.width, h: c.height, dataUrl: c.toDataURL('image/png'),
         widthMm: Math.round(Math.min(100, state.sheet.w * 0.6)), name: f.name.replace(/\.[^.]+$/, ''), fills: [], stackOrder: [], fromItems: null,
       });
-      if (traceStartMode === 'portrait') { trace.widthMm = 200; trace.x = 10; trace.y = 10; Object.assign(portrait, { res: null, photo: trace.src, bgSeeds: [], bgPick: false, lineUrl: '', kind: looksLikeLineArt(trace.src) ? 'line' : 'photo' }); }
+      if (traceStartMode === 'portrait') { trace.widthMm = 200; trace.x = 10; trace.y = 10; Object.assign(portrait, { res: null, photo: trace.src, bgSeeds: [], bgPick: false, lineUrl: '', kind: looksLikeLineArt(trace.src) ? 'line' : 'photo' }); portrait.detected = portrait.kind; }
       if (traceStartMode) { trace.mode = traceStartMode; trace.roles = []; if (trace.mode === 'stack' && trace.colors < 4) trace.colors = 4; }
       trace.x = Math.round((state.sheet.w - trace.widthMm) / 2);
       trace.y = Math.max(0, Math.round((state.sheet.h - trace.widthMm * trace.h / trace.w) / 2));
@@ -1906,13 +1906,23 @@ const APP = /*__APP__*/{ standalone: false };
       l.append(top, r); return l;
     };
     const kind = document.createElement('div'); kind.className = 'seg'; kind.setAttribute('role', 'group');
-    for (const [v, t] of [['photo', 'Foto'], ['line', 'Lijntekening']]) {
+    const kl = document.createElement('div'); kl.className = 'gl'; kl.textContent = 'Wat heb je ingeladen?';
+    for (const [v, t] of [['photo', 'Een foto'], ['line', 'Een kant-en-klare tekening']]) {
       const b = document.createElement('button'); b.type = 'button'; b.className = 'segbtn'; b.textContent = t;
       b.setAttribute('aria-pressed', String(portrait.kind === v));
       b.addEventListener('click', () => { portrait.kind = v; runPortrait(); });
       kind.appendChild(b);
     }
     let photoG = null, photoBg = null;
+    const kindEx = document.createElement('p'); kindEx.className = 'explain';
+    kindEx.textContent = portrait.kind === 'photo'
+      ? 'De app maakt van je foto eerst een lijntekening (rechts te zien) en snijdt die uit.'
+      : 'Gebruik dit alleen als je afbeelding al een zwart-witte lijntekening is, bv. zelf getekend of met een tekenprogramma gemaakt. Elk donker stukje wordt dan rechtstreeks uitgesneden.';
+    let kindWarn = null;
+    if (portrait.kind === 'line' && portrait.detected === 'photo') {
+      kindWarn = document.createElement('div'); kindWarn.className = 'cstat bad';
+      kindWarn.textContent = 'Dit lijkt een foto. Nu wordt elke donkere plek, ook schaduwen, uitgesneden. Kies "Een foto": dan maakt de app er eerst een nette lijntekening van.';
+    }
     if (portrait.kind === 'photo') {
       photoG = document.createElement('div'); photoG.className = 'group';
       const pt = document.createElement('div'); pt.className = 'gl'; pt.textContent = 'Van foto naar tekening';
@@ -2010,7 +2020,7 @@ const APP = /*__APP__*/{ standalone: false };
     const no = document.createElement('button'); no.className = 'btn'; no.type = 'button'; no.textContent = 'Annuleren';
     no.addEventListener('click', () => { portrait.res = null; cancelTrace(); });
     row.append(ok, no);
-    wrap.append(...[kind, photoG, main, ig, tg, st, row, photoBg].filter(Boolean), fold(more, 'portraitmore', 'Dunste lijn, smalste hout, rand, brugjes'));
+    wrap.append(...[kl, kind, kindEx, kindWarn, photoG, main, ig, tg, st, row, photoBg].filter(Boolean), fold(more, 'portraitmore', 'Dunste lijn, smalste hout, rand, brugjes'));
     props.appendChild(wrap);
   }
 
