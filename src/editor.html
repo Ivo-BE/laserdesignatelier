@@ -1574,10 +1574,14 @@ const APP = /*__APP__*/{ standalone: false };
       const border = []; for (let x = 0; x < w; x++) border.push(x, (h - 1) * w + x); for (let y = 0; y < h; y++) border.push(y * w, y * w + w - 1);
       const med = (A) => { const v = border.map((i) => A[i]).sort((a, b) => a - b); return v[v.length >> 1]; };
       const mr = med(S.R), mg = med(S.G), mb = med(S.B), tol = (portrait.bgTol * 2.2) / 255, q = new Int32Array(N);
+      // vanaf de rand groeien van buur naar buur: zo volgt het ook een achtergrond die naar de hoeken donkerder wordt (vignet),
+      // maar stopt het aan een duidelijke rand (haar, schouder)
+      const tl = tol * 0.35, tg = tol * 2;
       let qh = 0, qt = 0;
-      const ok = (i) => { const dr = S.R[i] - mr, dg = S.G[i] - mg, db = S.B[i] - mb; return dr * dr + dg * dg + db * db <= tol * tol; };
-      for (const i of border) if (!bg[i] && ok(i)) { bg[i] = 2; q[qt++] = i; }
-      while (qh < qt) { const i = q[qh++], x = i % w; for (const j of [x > 0 ? i - 1 : -1, x < w - 1 ? i + 1 : -1, i - w, i + w]) if (j >= 0 && j < N && !bg[j] && ok(j)) { bg[j] = 2; q[qt++] = j; } }
+      const near = (i) => { const dr = S.R[i] - mr, dg = S.G[i] - mg, db = S.B[i] - mb; return dr * dr + dg * dg + db * db <= tg * tg; };
+      const step = (i, j) => { const er = S.R[j] - S.R[i], eg = S.G[j] - S.G[i], eb = S.B[j] - S.B[i]; return er * er + eg * eg + eb * eb <= tl * tl; };
+      for (const i of border) if (!bg[i] && near(i)) { bg[i] = 2; q[qt++] = i; }
+      while (qh < qt) { const i = q[qh++], x = i % w; for (const j of [x > 0 ? i - 1 : -1, x < w - 1 ? i + 1 : -1, i - w, i + w]) if (j >= 0 && j < N && !bg[j] && step(i, j) && near(j)) { bg[j] = 2; q[qt++] = j; } }
       // alleen als het echt een effen achtergrond is (minstens 5% van de foto)
       if (qt < N * 0.05) for (let k = 0; k < qt; k++) bg[q[k]] = 0;
     }
@@ -1816,7 +1820,8 @@ const APP = /*__APP__*/{ standalone: false };
     const outerSub = toSub([main.outer]);
     const innerSub = toSub(pcs.flatMap((p) => (p === main ? p.holes : [p.outer, ...p.holes])));
     const isl = pcs.filter((p) => p !== main);
-    const fb = subpathsBBox(outerSub, { x: trace.x, y: trace.y, w: 1, h: 1 });
+    // de onderplaat moet onder álle stukken liggen, ook onder losse stukken naast de hoofdvorm
+    const fb = subpathsBBox(toSub(pcs.map((p) => p.outer)), { x: trace.x, y: trace.y, w: 1, h: 1 });
     const mg = portrait.margin;
     const board = { x: fb.x - mg, y: fb.y - mg, w: fb.w + 2 * mg, h: fb.h + 2 * mg };
     return { outerSub, innerSub, islandSub: toSub(isl.map((p) => p.outer)), islands: isl.length, board, thin: Dp !== D };
