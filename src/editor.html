@@ -592,6 +592,10 @@ const APP = /*__APP__*/{ standalone: false };
     if (history.length > 60) history.shift();
   }
   function undo() {
+    // tijdens het portretbord of gelaagd kunstwerk: de laatste klik terugdraaien
+    if (trace.active && trace.mode === 'portrait' && portrait.bgSeeds.length) { portrait.bgSeeds.pop(); runPortrait(); return; }
+    if (trace.active && trace.mode === 'stack' && trace.fills && trace.fills.length) { trace.fills.pop(); trace.stack = buildStack(); render(); return; }
+    if (trace.active) return toast('Niets om ongedaan te maken. Annuleren sluit deze functie.');
     const s = history.pop();
     if (!s) return toast('Niets meer om ongedaan te maken');
     const d = JSON.parse(s);
@@ -992,7 +996,7 @@ const APP = /*__APP__*/{ standalone: false };
         active: true, src: ctx.getImageData(0, 0, c.width, c.height), w: c.width, h: c.height, dataUrl: c.toDataURL('image/png'),
         widthMm: Math.round(Math.min(100, state.sheet.w * 0.6)), name: f.name.replace(/\.[^.]+$/, ''), fills: [], stackOrder: [], fromItems: null,
       });
-      if (traceStartMode === 'portrait') { trace.widthMm = 200; trace.x = 10; trace.y = 10; Object.assign(portrait, { res: null, photo: trace.src, bgSeeds: [], lineUrl: '', kind: looksLikeLineArt(trace.src) ? 'line' : 'photo' }); }
+      if (traceStartMode === 'portrait') { trace.widthMm = 200; trace.x = 10; trace.y = 10; Object.assign(portrait, { res: null, photo: trace.src, bgSeeds: [], bgPick: false, lineUrl: '', kind: looksLikeLineArt(trace.src) ? 'line' : 'photo' }); }
       if (traceStartMode) { trace.mode = traceStartMode; trace.roles = []; if (trace.mode === 'stack' && trace.colors < 4) trace.colors = 4; }
       trace.x = Math.round((state.sheet.w - trace.widthMm) / 2);
       trace.y = Math.max(0, Math.round((state.sheet.h - trace.widthMm * trace.h / trace.w) / 2));
@@ -1463,9 +1467,15 @@ const APP = /*__APP__*/{ standalone: false };
     return out;
   }
   function looksLikeLineArt(img) {
-    const d = img.data; let pure = 0, n = 0;
-    for (let j = 0; j < d.length; j += 16) { const g = 0.299 * d[j] + 0.587 * d[j + 1] + 0.114 * d[j + 2]; if (g < 70 || g > 200) pure++; n++; }
-    return pure / n > 0.88;
+    // lijntekening: bijna alleen zwart en wit, en (bijna) geen kleur
+    const d = img.data; let pure = 0, col = 0, n = 0;
+    for (let j = 0; j < d.length; j += 16) {
+      const g = 0.299 * d[j] + 0.587 * d[j + 1] + 0.114 * d[j + 2];
+      if (g < 70 || g > 200) pure++;
+      if (Math.max(d[j], d[j + 1], d[j + 2]) - Math.min(d[j], d[j + 1], d[j + 2]) > 40) col++;
+      n++;
+    }
+    return pure / n > 0.88 && col / n < 0.03;
   }
   // randbewarend vervagen (bilateraal filter): vlakken worden egaal, randen blijven scherp. Eén keer per foto, daarna uit de cache.
   let bilCache = { img: null, key: '', out: null };
@@ -1515,8 +1525,19 @@ const APP = /*__APP__*/{ standalone: false };
     const S = bilateral(img, 4, Math.max(2, Math.round(4 * sc)), 0.1);
     const G = new Float32Array(N);
     for (let i = 0; i < N; i++) G[i] = 0.299 * S.R[i] + 0.587 * S.G[i] + 0.114 * S.B[i];
-    // 2. achtergrond: aangeklikte plekken uitbreiden over gelijkaardige kleuren
+    // 2. achtergrond: vanaf de rand (effen muur) en vanaf aangeklikte plekken uitbreiden over gelijkaardige kleuren
     const bg = new Uint8Array(N);
+    if (portrait.autoBg) {
+      const border = []; for (let x = 0; x < w; x++) border.push(x, (h - 1) * w + x); for (let y = 0; y < h; y++) border.push(y * w, y * w + w - 1);
+      const med = (A) => { const v = border.map((i) => A[i]).sort((a, b) => a - b); return v[v.length >> 1]; };
+      const mr = med(S.R), mg = med(S.G), mb = med(S.B), tol = (portrait.bgTol * 2.2) / 255, q = new Int32Array(N);
+      let qh = 0, qt = 0;
+      const ok = (i) => { const dr = S.R[i] - mr, dg = S.G[i] - mg, db = S.B[i] - mb; return dr * dr + dg * dg + db * db <= tol * tol; };
+      for (const i of border) if (!bg[i] && ok(i)) { bg[i] = 2; q[qt++] = i; }
+      while (qh < qt) { const i = q[qh++], x = i % w; for (const j of [x > 0 ? i - 1 : -1, x < w - 1 ? i + 1 : -1, i - w, i + w]) if (j >= 0 && j < N && !bg[j] && ok(j)) { bg[j] = 2; q[qt++] = j; } }
+      // alleen als het echt een effen achtergrond is (minstens 5% van de foto)
+      if (qt < N * 0.05) for (let k = 0; k < qt; k++) bg[q[k]] = 0;
+    }
     if (portrait.bgSeeds.length) {
       const tol = (portrait.bgTol * 2.2) / 255, q = new Int32Array(N);
       for (const [fx, fy] of portrait.bgSeeds) {
@@ -1579,7 +1600,7 @@ const APP = /*__APP__*/{ standalone: false };
     const f = new Float32Array(N); for (let i = 0; i < N; i++) f[i] = ink[i];
     const sm = gaussBlur(f, w, h, 2.5 * sc);
     for (let i = 0; i < N; i++) ink[i] = sm[i] > 0.5 && !bg[i] ? 1 : 0;
-    portrait.bgMask = portrait.bgSeeds.length ? bg : null;
+    portrait.bgMask = bg.some((v) => v) ? bg : null;
     const out = new ImageData(w, h), o = out.data;
     for (let i = 0, j = 0; i < N; i++, j += 4) { const v = ink[i] ? 0 : 255; o[j] = o[j + 1] = o[j + 2] = v; o[j + 3] = 255; }
     return out;
@@ -1589,7 +1610,7 @@ const APP = /*__APP__*/{ standalone: false };
   // De zwarte lijnen worden sleufjes door de bovenlaag; je kijkt erdoor op de donkere onderplaat.
   const portrait = { thr: 128, rand: 4, minLine: 0.8, minWood: 1, margin: 15, islands: 'glue', bridge: 1.2, tag: true, tagText: 'Naam \u2665 Naam', res: null,
     // foto-modus
-    kind: 'line', photo: null, lineUrl: '', lineSize: 2, lineAmt: 50, darkAmt: 35, bgSeeds: [], bgTol: 12 };
+    kind: 'line', photo: null, lineUrl: '', lineSize: 2, lineAmt: 50, darkAmt: 35, bgSeeds: [], bgTol: 12, autoBg: true, bgPick: false };
   const WOOD_DARK = '#4a2f22', WOOD_LIGHT = '#e9d8b4';
   let portraitTimer = null;
   function schedulePortrait() { clearTimeout(portraitTimer); portraitTimer = setTimeout(runPortrait, 250); }
@@ -1853,11 +1874,26 @@ const APP = /*__APP__*/{ standalone: false };
         range('pt_la', 'Aantal lijnen', 0, 100, 5, () => portrait.lineAmt, (v) => { portrait.lineAmt = v; }, (v) => (v < 35 ? 'weinig' : v > 65 ? 'veel' : 'normaal')),
         range('pt_da', 'Donkere vlakken zwart (haar, kleding)', 0, 100, 5, () => portrait.darkAmt, (v) => { portrait.darkAmt = v; }, (v) => (v < 20 ? 'bijna niets' : v > 60 ? 'veel' : 'normaal')),
       );
-      const bt = document.createElement('div'); bt.className = 'cstat';
-      bt.textContent = portrait.bgSeeds.length ? `Achtergrond: ${portrait.bgSeeds.length}× aangeklikt. Klik verder op wat nog weg moet.` : 'Klik op de plaat op de achtergrond van je foto om die weg te halen.';
-      photoG.appendChild(bt);
-      if (portrait.bgSeeds.length) {
+      const ab = document.createElement('label'); ab.className = 'check';
+      const ac = document.createElement('input'); ac.type = 'checkbox'; ac.id = 'pt_autobg'; ac.checked = portrait.autoBg;
+      ac.addEventListener('change', () => { portrait.autoBg = ac.checked; runPortrait(); });
+      ab.append(ac, document.createTextNode(' Effen achtergrond automatisch weghalen'));
+      photoG.appendChild(ab);
+      const pk = document.createElement('button'); pk.type = 'button'; pk.id = 'pt_pick'; pk.className = 'btn' + (portrait.bgPick ? ' primary' : '');
+      pk.textContent = portrait.bgPick ? 'Klaar met aanklikken' : 'Achtergrond aanklikken';
+      pk.style.whiteSpace = 'normal';
+      pk.setAttribute('aria-pressed', String(portrait.bgPick));
+      pk.addEventListener('click', () => { portrait.bgPick = !portrait.bgPick; render(); });
+      photoG.appendChild(pk);
+      if (portrait.bgPick) {
+        const bt = document.createElement('div'); bt.className = 'cstat';
+        bt.textContent = portrait.bgSeeds.length ? `${portrait.bgSeeds.length}× aangeklikt. Klik op de plaat op wat nog weg moet. Ctrl+Z draait de laatste klik terug.` : 'Klik op de plaat op een stuk achtergrond. Alles met dezelfde kleur errond verdwijnt.';
+        photoG.appendChild(bt);
+      }
+      if (portrait.bgSeeds.length || portrait.autoBg) {
         photoG.appendChild(range('pt_tol', 'Hoe ver de achtergrond doorloopt', 2, 40, 1, () => portrait.bgTol, (v) => { portrait.bgTol = v; }, (v) => (v < 8 ? 'weinig' : v > 22 ? 'veel' : 'normaal')));
+      }
+      if (portrait.bgSeeds.length) {
         const r2 = document.createElement('div'); r2.className = 'row';
         const un = document.createElement('button'); un.type = 'button'; un.className = 'btn'; un.textContent = 'Laatste klik ongedaan maken';
         un.addEventListener('click', () => { portrait.bgSeeds.pop(); runPortrait(); });
@@ -3900,7 +3936,7 @@ const APP = /*__APP__*/{ standalone: false };
       return;
     }
     // gelaagd kunstwerk: klik op een vlek of gaatje om het op te vullen met de kleur eromheen
-    if (trace.active && trace.mode === 'portrait' && portrait.kind === 'photo' && !trace.busy && !(spaceDown || e.button === 1)) {
+    if (trace.active && trace.mode === 'portrait' && portrait.kind === 'photo' && portrait.bgPick && !trace.busy && !(spaceDown || e.button === 1)) {
       const fx = (p.x - trace.x) / trace.widthMm, fy = (p.y - trace.y) / (trace.widthMm * trace.h / trace.w);
       if (fx >= 0 && fx <= 1 && fy >= 0 && fy <= 1) { portrait.bgSeeds.push([fx, fy]); runPortrait(); return; }
     }
@@ -4868,7 +4904,15 @@ const APP = /*__APP__*/{ standalone: false };
       if (APP.standalone) FILES.status(); else setSaveState('Online bewaren lukte niet; bewaard in deze browser.', true);
     }
   }
+  // openstaande functies (afbeelding omzetten, portretbord, contour, vorm bewerken) sluiten bij een ander ontwerp
+  function closeModes() {
+    trace.active = false; trace.src = null; trace.layers = []; trace.stack = []; trace.fromItems = null; trace.busy = false;
+    portrait.res = null; portrait.photo = null; portrait.bgSeeds = []; portrait.bgPick = false;
+    contour.active = false; contour.preview = null;
+    if (edit.active) edit.active = false;
+  }
   function loadProject(d, id) {
+    closeModes();
     projectId = id || newId();
     projectName = d.name || '';
     document.getElementById('projName').value = projectName;
@@ -4887,6 +4931,7 @@ const APP = /*__APP__*/{ standalone: false };
   }
   function newProject() {
     saveNow();
+    closeModes();
     projectId = newId(); projectName = '';
     document.getElementById('projName').value = '';
     state.sheet = { w: 200, h: 120 }; state.items = []; state.layerOrder = ROLES.map((r) => r.id);
