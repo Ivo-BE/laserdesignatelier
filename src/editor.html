@@ -1674,24 +1674,8 @@ const APP = /*__APP__*/{ standalone: false };
     };
     const rpx = Math.max(1, portrait.rand / k);
     let fig;
-    if (portrait.kind === 'photo') {
-      // foto: alles behalve de aangeklikte achtergrond, met de lichte rand eromheen
-      const keep = new Uint8Array(N); for (let i = 0; i < N; i++) keep[i] = portrait.bgMask && portrait.bgMask[i] ? 0 : 1;
-      const clicked = portrait.bgMask || new Uint8Array(N); // 3 = zelf aangeklikt: nooit terug opvullen
-      // losse restjes figuur weg en kleine gaatjes achtergrond dicht (kleiner dan 1% van de foto)
-      const comps = (val, minSize, setTo) => {
-        const seen = new Uint8Array(N), q = new Int32Array(N);
-        for (let i0 = 0; i0 < N; i0++) {
-          if (keep[i0] !== val || seen[i0]) continue;
-          let qh = 0, qt = 0, edge = false; seen[i0] = 1; q[qt++] = i0;
-          while (qh < qt) { const i = q[qh++], x = i % w; if (x === 0 || x === w - 1 || i < w || i >= N - w || clicked[i] === 3) edge = true; for (const j of [x > 0 ? i - 1 : -1, x < w - 1 ? i + 1 : -1, i - w, i + w]) if (j >= 0 && j < N && keep[j] === val && !seen[j]) { seen[j] = 1; q[qt++] = j; } }
-          if (qt < minSize && (val === 1 || !edge)) for (let t = 0; t < qt; t++) keep[q[t]] = setTo;
-        }
-      };
-      if (portrait.bgMask) { comps(1, N * 0.01, 0); comps(0, N * 0.01, 1); }
-      const dk = distFrom(keep);
-      fig = new Uint8Array(N); for (let i = 0; i < N; i++) fig[i] = dk[i] <= rpx ? 1 : 0;
-    } else {
+    // de plaat volgt de tekening: alles wat binnen de (iets dikkere) lijnen ligt, hoort bij de figuur
+    {
     const dist = distFrom(dark);
     const bg = new Uint8Array(N), q = new Int32Array(N); let qh = 0, qt = 0;
     const seed = (i) => { if (!bg[i] && dist[i] > rpx) { bg[i] = 1; q[qt++] = i; } };
@@ -1795,7 +1779,7 @@ const APP = /*__APP__*/{ standalone: false };
     return { outerSub, innerSub, islandSub: toSub(isl.map((p) => p.outer)), islands: isl.length, board, thin: Dp !== D };
   }
   const rectSub = (r) => [{ start: [r.x, r.y], segs: [{ t: 'L', p: [r.x + r.w, r.y] }, { t: 'L', p: [r.x + r.w, r.y + r.h] }, { t: 'L', p: [r.x, r.y + r.h] }], closed: true }];
-  // naambordje: tekst gecentreerd, plaatje er ruim omheen, rechtsboven op de onderplaat
+  // naambordje: tekst gecentreerd, plaatje er ruim omheen, rechtsonder op de onderplaat
   function portraitTag(board) {
     const text = portrait.tagText.trim();
     if (!portrait.tag || !text) return null;
@@ -1803,7 +1787,7 @@ const APP = /*__APP__*/{ standalone: false };
     const t = { id: nid(), role: 'vul', type: 'text', x: 0, y: 0, text, font: 'dancing', bold: false, italic: false, size: 7, anchor: 'middle', spacing: 0, lineHeight: 1.3, name: 'Namen' };
     const tb = bbox(t);
     const pad = 5, W = tb.w + 2 * pad, H = tb.h + 2 * pad;
-    const r = { x: board.x + board.w - W - 8, y: board.y + 8, w: W, h: H };
+    const r = { x: board.x + board.w - W - 8, y: board.y + board.h - H - 8, w: W, h: H }; // rechtsonder: bij een portret is daar meestal plaats
     t.x += r.x + pad - tb.x; t.y += r.y + pad - tb.y;
     void lines;
     return { rect: r, text: t };
@@ -1905,7 +1889,7 @@ const APP = /*__APP__*/{ standalone: false };
       photoG.appendChild(pk);
       if (portrait.bgPick) {
         const bt = document.createElement('div'); bt.className = 'cstat';
-        bt.textContent = portrait.bgSeeds.length ? `${portrait.bgSeeds.length}× aangeklikt. Klik op de plaat op wat nog weg moet. Ctrl+Z draait de laatste klik terug.` : 'Klik op de plaat op een stuk achtergrond. Alles met dezelfde kleur errond verdwijnt.';
+        bt.textContent = portrait.bgSeeds.length ? `${portrait.bgSeeds.length}× aangeklikt. Klik op de plaat op wat nog weg moet. Ctrl+Z draait de laatste klik terug.` : 'Klik op de plaat op een stuk achtergrond: lijnen en vlekken die daar staan, verdwijnen uit de tekening.';
         photoG.appendChild(bt);
       }
       if (portrait.bgSeeds.length || portrait.autoBg) {
