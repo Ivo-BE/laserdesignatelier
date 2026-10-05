@@ -567,7 +567,7 @@ input[type="range"] { width: 100%; accent-color: var(--accent); }
       <div class="seg" role="group" aria-label="Weergave">
         <button type="button" class="segbtn" data-pv="material" aria-pressed="true">Zo wordt het</button>
         <button type="button" class="segbtn" data-pv="layers" aria-pressed="false">Laserlagen</button>
-        <button type="button" class="segbtn" data-pv="stack" aria-pressed="false" hidden>Gestapeld</button>
+        <button type="button" class="segbtn" data-pv="stack" aria-pressed="false" hidden>Eindresultaat</button>
       </div>
       <div class="spacer"></div>
       <button class="btn" id="pvSave">Bewaar als PNG</button>
@@ -667,7 +667,8 @@ const APP = /*__APP__*/{ standalone: false };
     paperReady = true;
     return true;
   }
-  const canWeld = (it) => it.type !== 'line' && it.type !== 'image';
+  // lagen van een gestapeld werk (portretbord, gelaagd kunstwerk) nooit samensmelten: dat zou de uitsnedes vernietigen
+  const canWeld = (it) => it.type !== 'line' && it.type !== 'image' && !it.stack && it.role !== 'hulp';
   // geometrie van een object als subpaden (voor tekst, samengesmolten vormen en vrije paden)
   function geomSubpaths(it) { return geom(it); }
   function toPaper(it) {
@@ -1219,7 +1220,7 @@ const APP = /*__APP__*/{ standalone: false };
     const p = items.find((i) => i.stack && i.type === 'path');
     if (!p) return null;
     const g = document.createElement('div'); g.className = 'group';
-    const t = document.createElement('div'); t.className = 'gl'; t.textContent = `Laag ${p.stack.k + 1} van ${p.stack.n} (gestapeld kunstwerk)`;
+    const t = document.createElement('div'); t.className = 'gl'; t.textContent = `Laag ${p.stack.k + 1} van ${p.stack.n}: ${p.name || ''}`;
     const lab = document.createElement('label'); lab.className = 'field'; lab.htmlFor = 'p_lcol'; lab.textContent = 'Kleur van deze laag (voor het voorbeeld)';
     const inp = document.createElement('input'); inp.type = 'color'; inp.id = 'p_lcol'; inp.value = p.layerColor || '#cccccc';
     inp.addEventListener('input', () => { p.layerColor = inp.value; scheduleSave(); });
@@ -1859,8 +1860,8 @@ const APP = /*__APP__*/{ standalone: false };
     const y0 = others.length ? Math.ceil(selBBox(others).y + selBBox(others).h + gap) : 2;
     // vakjes: onderplaat, bovenlaag (zelfde maat), naambordje
     const cells = [{ w: b.w, h: b.h }, { w: b.w, h: b.h }].concat(tg ? [{ w: tg.rect.w, h: tg.rect.h }] : []);
-    let cx = 2, cy = y0, rowH = 0, maxW = 0;
-    const pos = cells.map((c) => { if (cx > 2 && cx + c.w > Math.max(state.sheet.w, b.w + 4) - 2) { cx = 2; cy += rowH + gap; rowH = 0; } const p = [cx, cy]; cx += c.w + gap; rowH = Math.max(rowH, c.h); maxW = Math.max(maxW, cx - gap); return p; });
+    let cx = 2, cy = y0 + 5, rowH = 0, maxW = 0; // ruimte boven elk stuk voor een hulptekst
+    const pos = cells.map((c) => { if (cx > 2 && cx + c.w > Math.max(state.sheet.w, b.w + 4) - 2) { cx = 2; cy += rowH + gap + 5; rowH = 0; } const p = [cx, cy]; cx += c.w + gap; rowH = Math.max(rowH, c.h); maxW = Math.max(maxW, cx - gap); return p; });
     const needW = maxW + 2, needH = cy + rowH + 2;
     let grown = false;
     if (needW > state.sheet.w || needH > state.sheet.h) { state.sheet = { w: Math.ceil(Math.max(state.sheet.w, needW)), h: Math.ceil(Math.max(state.sheet.h, needH)) }; grown = true; syncSheetInputs(); }
@@ -1881,13 +1882,17 @@ const APP = /*__APP__*/{ standalone: false };
       made.push({ id: nid(), role: 'buiten', type: 'path', group: g2, name: 'Naambordje', layerColor: WOOD_LIGHT, stack: { id: sid, k: 2, n }, stackRef: [dx, dy], subpaths: mv(rectSub(tg.rect), dx, dy) });
       made.push(Object.assign(tg.text, { group: g2, x: tg.text.x + dx, y: tg.text.y + dy, stack: { id: sid, k: 2, n }, stackRef: [dx, dy] }));
     }
+    // hulptekst boven elk stuk: uit welk hout (wordt niet gelaserd)
+    const lab = (k, text) => made.push({ id: nid(), role: 'hulp', type: 'text', x: pos[k][0], y: pos[k][1] - 1.8, text, font: 'sans', bold: false, italic: false, size: 3, anchor: 'start', spacing: 0, lineHeight: 1.6 });
+    lab(0, 'Onderplaat: uit donker hout snijden'); lab(1, 'Bovenlaag: uit licht hout snijden');
+    if (tg) lab(2, 'Naambordje: uit licht hout');
     state.items.push(...made);
-    state.sel = made[0].id; state.multi = made.slice(1).map((m) => m.id);
+    state.sel = null; state.multi = [];
     const nIsl = portrait.islands === 'glue' ? R.islands : 0;
     trace.active = false; trace.src = null; trace.layers = []; portrait.res = null;
     fit();
     setTimeout(() => { pvMode = 'stack'; pvStack = sid; showPreview(); }, 50);
-    toast(`Portretbord geplaatst: onderplaat, bovenlaag${tg ? ' en naambordje' : ''}.` + (nIsl ? ` ${nIsl} losse stukjes snij je mee en lijm je terug op hun plek.` : '') + (grown ? ` De plaat is vergroot tot ${state.sheet.w} × ${state.sheet.h} mm.` : ''));
+    toast(`Portretbord geplaatst: onderplaat, bovenlaag${tg ? ' en naambordje' : ''}. Snij de onderplaat uit donker hout en de rest uit licht hout, dan lijm je ze op elkaar.` + (nIsl ? ` ${nIsl} losse stukjes snij je mee en lijm je terug op hun plek.` : '') + (grown ? ` De plaat is vergroot tot ${state.sheet.w} × ${state.sheet.h} mm.` : ''));
   }
   function renderPortraitPanel(head) {
     head.innerHTML = '<span class="kind">Functie</span><span class="name">Portretbord</span><span class="explain">De zwarte lijnen worden uitgesneden: zo zie je de donkere onderplaat erdoor. Werkt met een foto of met een lijntekening.</span>';
@@ -1907,7 +1912,7 @@ const APP = /*__APP__*/{ standalone: false };
       b.addEventListener('click', () => { portrait.kind = v; runPortrait(); });
       kind.appendChild(b);
     }
-    let photoG = null;
+    let photoG = null, photoBg = null;
     if (portrait.kind === 'photo') {
       photoG = document.createElement('div'); photoG.className = 'group';
       const pt = document.createElement('div'); pt.className = 'gl'; pt.textContent = 'Van foto naar tekening';
@@ -1918,24 +1923,29 @@ const APP = /*__APP__*/{ standalone: false };
         range('pt_la', 'Aantal lijnen', 0, 100, 5, () => portrait.lineAmt, (v) => { portrait.lineAmt = v; }, (v) => (v < 35 ? 'weinig' : v > 65 ? 'veel' : 'normaal')),
         range('pt_da', 'Donkere vlakken zwart (haar, kleding)', 0, 100, 5, () => portrait.darkAmt, (v) => { portrait.darkAmt = v; }, (v) => (v < 20 ? 'bijna niets' : v > 60 ? 'veel' : 'normaal')),
       );
+      // achtergrond: alleen nodig als er lijnen of vlekken in de achtergrond van de tekening komen
+      const bgG = document.createElement('div'); bgG.className = 'group';
+      const bgt = document.createElement('div'); bgt.className = 'gl'; bgt.textContent = 'Achtergrond';
+      const bge = document.createElement('p'); bge.className = 'explain'; bge.textContent = 'Alleen nodig als er in de tekening lijnen of vlekken van de achtergrond staan. Bij een effen achtergrond gebeurt dit vanzelf en zie je geen verschil.';
+      bgG.append(bgt, bge);
       const ab = document.createElement('label'); ab.className = 'check';
       const ac = document.createElement('input'); ac.type = 'checkbox'; ac.id = 'pt_autobg'; ac.checked = portrait.autoBg;
       ac.addEventListener('change', () => { portrait.autoBg = ac.checked; runPortrait(); });
       ab.append(ac, document.createTextNode(' Effen achtergrond automatisch weghalen'));
-      photoG.appendChild(ab);
+      bgG.appendChild(ab);
       const pk = document.createElement('button'); pk.type = 'button'; pk.id = 'pt_pick'; pk.className = 'btn' + (portrait.bgPick ? ' primary' : '');
       pk.textContent = portrait.bgPick ? 'Klaar met aanklikken' : 'Achtergrond aanklikken';
       pk.style.whiteSpace = 'normal';
       pk.setAttribute('aria-pressed', String(portrait.bgPick));
       pk.addEventListener('click', () => { portrait.bgPick = !portrait.bgPick; render(); });
-      photoG.appendChild(pk);
+      bgG.appendChild(pk);
       if (portrait.bgPick) {
         const bt = document.createElement('div'); bt.className = 'cstat';
         bt.textContent = portrait.bgSeeds.length ? `${portrait.bgSeeds.length}× aangeklikt. Klik op de plaat op wat nog weg moet. Ctrl+Z draait de laatste klik terug.` : 'Klik op de plaat op een stuk achtergrond: lijnen en vlekken die daar staan, verdwijnen uit de tekening.';
-        photoG.appendChild(bt);
+        bgG.appendChild(bt);
       }
       if (portrait.bgSeeds.length || portrait.autoBg) {
-        photoG.appendChild(range('pt_tol', 'Hoe ver de achtergrond doorloopt', 2, 40, 1, () => portrait.bgTol, (v) => { portrait.bgTol = v; }, (v) => (v < 8 ? 'weinig' : v > 22 ? 'veel' : 'normaal')));
+        bgG.appendChild(range('pt_tol', 'Hoe ver de achtergrond doorloopt', 2, 40, 1, () => portrait.bgTol, (v) => { portrait.bgTol = v; }, (v) => (v < 8 ? 'weinig' : v > 22 ? 'veel' : 'normaal')));
       }
       if (portrait.bgSeeds.length) {
         const r2 = document.createElement('div'); r2.className = 'row';
@@ -1943,8 +1953,10 @@ const APP = /*__APP__*/{ standalone: false };
         un.addEventListener('click', () => { portrait.bgSeeds.pop(); runPortrait(); });
         const cl = document.createElement('button'); cl.type = 'button'; cl.className = 'btn'; cl.textContent = 'Alles terug';
         cl.addEventListener('click', () => { portrait.bgSeeds = []; runPortrait(); });
-        r2.append(un, cl); photoG.appendChild(r2);
+        r2.append(un, cl); bgG.appendChild(r2);
       }
+      if (portrait.bgPick) openFolds.add('portraitbg');
+      photoBg = fold(bgG, 'portraitbg', 'Alleen als er lijnen in de achtergrond staan');
     }
     const main = document.createElement('div'); main.className = 'group';
     if (portrait.kind === 'line') main.append(
@@ -1998,7 +2010,7 @@ const APP = /*__APP__*/{ standalone: false };
     const no = document.createElement('button'); no.className = 'btn'; no.type = 'button'; no.textContent = 'Annuleren';
     no.addEventListener('click', () => { portrait.res = null; cancelTrace(); });
     row.append(ok, no);
-    wrap.append(...[kind, photoG, main, ig, tg, st, row].filter(Boolean), fold(more, 'portraitmore', 'Dunste lijn, smalste hout, rand, brugjes'));
+    wrap.append(...[kind, photoG, main, ig, tg, st, row, photoBg].filter(Boolean), fold(more, 'portraitmore', 'Dunste lijn, smalste hout, rand, brugjes'));
     props.appendChild(wrap);
   }
 
@@ -3507,7 +3519,7 @@ const APP = /*__APP__*/{ standalone: false };
     gg.appendChild(gb);
     if (!sg && all.some((i) => i.group)) { const ub = document.createElement('button'); ub.className = 'btn'; ub.type = 'button'; ub.textContent = 'Groepen opheffen'; ub.addEventListener('click', ungroupSelection); gg.appendChild(ub); }
     const npath = all.filter((i) => i.type === 'path').length;
-    if (npath >= 2) { const cbn = document.createElement('button'); cbn.className = 'btn'; cbn.type = 'button'; cbn.textContent = `${npath} vormen samenvoegen tot één`; cbn.title = 'Wordt één object, zonder iets te veranderen aan de lijnen (niet samensmelten)'; cbn.addEventListener('click', combinePaths); gg.appendChild(cbn); }
+    if (npath >= 2 && !all.some((i) => i.stack)) { const cbn = document.createElement('button'); cbn.className = 'btn'; cbn.type = 'button'; cbn.textContent = `${npath} vormen samenvoegen tot één`; cbn.title = 'Wordt één object, zonder iets te veranderen aan de lijnen (niet samensmelten)'; cbn.addEventListener('click', combinePaths); gg.appendChild(cbn); }
     const ge = document.createElement('p'); ge.className = 'explain';
     ge.textContent = sg ? 'De objecten blijven elk hun eigen bewerking houden.' : 'Groeperen houdt objecten bij elkaar, zonder ze te veranderen: elk houdt zijn eigen bewerking. Samenvoegen maakt van losse vrije vormen één object. Samensmelten (hieronder) maakt er één omtrek van.';
     const weldable = all.filter(canWeld).length;
@@ -4162,6 +4174,9 @@ const APP = /*__APP__*/{ standalone: false };
     hidePicker();
     const ids = st.ids.filter((id) => state.items.some((i) => i.id === id));
     if (ids.length < 2) return;
+    // onderdelen van één groep (bv. lijnen + buitenrand van een bovenlaag) zijn geen aparte keuze
+    const grs = new Set(ids.map((id) => { const it = state.items.find((i) => i.id === id); return it.group || it.id; }));
+    if (grs.size < 2) return;
     const b = document.createElement('button'); b.type = 'button'; b.className = 'stackchip';
     b.textContent = `Hier liggen ${ids.length} objecten op elkaar · kies…`;
     b.addEventListener('pointerdown', (e) => e.stopPropagation());
@@ -4455,7 +4470,7 @@ const APP = /*__APP__*/{ standalone: false };
       if (!sids.includes(pvStack)) pvStack = sids[0];
       const S = stackedSVG(pvStack);
       document.querySelectorAll('[data-pv]').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.pv === pvMode)));
-      document.getElementById('pvNote').textContent = 'Zo ziet het eruit als alle lagen op elkaar gelijmd zijn, onderste laag eerst. De kleuren komen uit je afbeelding; pas ze per laag aan in het zijpaneel (selecteer een laag).';
+      document.getElementById('pvNote').textContent = 'Zo ziet het eruit als de lagen op elkaar gelijmd zijn. De kleuren zijn alleen voor dit voorbeeld; pas ze per laag aan in het zijpaneel.';
       try {
         const blob = await rasterize(S.svg, S.w, S.h);
         if (pvUrl) URL.revokeObjectURL(pvUrl);
