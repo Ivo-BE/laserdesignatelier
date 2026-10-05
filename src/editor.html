@@ -1539,14 +1539,26 @@ const APP = /*__APP__*/{ standalone: false };
       if (qt < N * 0.05) for (let k = 0; k < qt; k++) bg[q[k]] = 0;
     }
     if (portrait.bgSeeds.length) {
-      const tol = (portrait.bgTol * 2.2) / 255, q = new Int32Array(N);
+      // groeien van buur naar buur (zo volgt het ook een achtergrond die geleidelijk donkerder wordt),
+      // maar nooit te ver van de kleur waar je op klikte
+      const tol = (portrait.bgTol * 2.2) / 255, tl = tol * 0.35, tg = tol * 1.6, q = new Int32Array(N);
+      portrait.seedHits = [];
       for (const [fx, fy] of portrait.bgSeeds) {
         const s0 = Math.min(N - 1, Math.max(0, Math.round(fy * (h - 1)) * w + Math.round(fx * (w - 1))));
         const r0 = S.R[s0], g0 = S.G[s0], b0 = S.B[s0];
         let qh = 0, qt = 0;
-        const add = (i) => { if (bg[i] === 2) return; const dr = S.R[i] - r0, dg = S.G[i] - g0, db = S.B[i] - b0; if (dr * dr + dg * dg + db * db <= tol * tol) { bg[i] = 2; q[qt++] = i; } };
-        add(s0);
-        while (qh < qt) { const i = q[qh++], x = i % w; if (x > 0) add(i - 1); if (x < w - 1) add(i + 1); if (i >= w) add(i - w); if (i < N - w) add(i + w); }
+        const add = (i, from) => {
+          if (bg[i] === 3) return;
+          const er = S.R[i] - S.R[from], eg = S.G[i] - S.G[from], eb = S.B[i] - S.B[from];
+          if (er * er + eg * eg + eb * eb > tl * tl) return;
+          const dr = S.R[i] - r0, dg = S.G[i] - g0, db = S.B[i] - b0;
+          if (dr * dr + dg * dg + db * db > tg * tg) return;
+          bg[i] = 3; q[qt++] = i;
+        };
+        if (bg[s0]) { portrait.seedHits.push(Infinity); continue; } // lag al bij de achtergrond
+        bg[s0] = 3; q[qt++] = s0;
+        while (qh < qt) { const i = q[qh++], x = i % w; if (x > 0) add(i - 1, i); if (x < w - 1) add(i + 1, i); if (i >= w) add(i - w, i); if (i < N - w) add(i + w, i); }
+        portrait.seedHits.push(qt);
       }
     }
     // 3. contrast rekken (donkere binnenfoto's), zodat lijnen overal even sterk zijn
@@ -1624,6 +1636,11 @@ const APP = /*__APP__*/{ standalone: false };
           portrait.lineUrl = c.toDataURL('image/png');
         } else if (portrait.photo) { trace.src = portrait.photo; portrait.lineUrl = ''; }
         portrait.res = buildPortrait();
+        if (portrait.justClicked && portrait.seedHits && portrait.seedHits.length) {
+          const n = portrait.seedHits[portrait.seedHits.length - 1];
+          if (n < trace.w * trace.h * 0.002) toast('Hier verdween bijna niets. Schuif "Hoe ver de achtergrond doorloopt" naar rechts, of klik op een groter stuk achtergrond.');
+        }
+        portrait.justClicked = false;
       } catch (err) { console.error(err); portrait.res = null; toast('Het portretbord kon niet gemaakt worden met deze tekening.'); }
       trace.busy = false; render();
     }, 20);
@@ -1660,13 +1677,14 @@ const APP = /*__APP__*/{ standalone: false };
     if (portrait.kind === 'photo') {
       // foto: alles behalve de aangeklikte achtergrond, met de lichte rand eromheen
       const keep = new Uint8Array(N); for (let i = 0; i < N; i++) keep[i] = portrait.bgMask && portrait.bgMask[i] ? 0 : 1;
+      const clicked = portrait.bgMask || new Uint8Array(N); // 3 = zelf aangeklikt: nooit terug opvullen
       // losse restjes figuur weg en kleine gaatjes achtergrond dicht (kleiner dan 1% van de foto)
       const comps = (val, minSize, setTo) => {
         const seen = new Uint8Array(N), q = new Int32Array(N);
         for (let i0 = 0; i0 < N; i0++) {
           if (keep[i0] !== val || seen[i0]) continue;
           let qh = 0, qt = 0, edge = false; seen[i0] = 1; q[qt++] = i0;
-          while (qh < qt) { const i = q[qh++], x = i % w; if (x === 0 || x === w - 1 || i < w || i >= N - w) edge = true; for (const j of [x > 0 ? i - 1 : -1, x < w - 1 ? i + 1 : -1, i - w, i + w]) if (j >= 0 && j < N && keep[j] === val && !seen[j]) { seen[j] = 1; q[qt++] = j; } }
+          while (qh < qt) { const i = q[qh++], x = i % w; if (x === 0 || x === w - 1 || i < w || i >= N - w || clicked[i] === 3) edge = true; for (const j of [x > 0 ? i - 1 : -1, x < w - 1 ? i + 1 : -1, i - w, i + w]) if (j >= 0 && j < N && keep[j] === val && !seen[j]) { seen[j] = 1; q[qt++] = j; } }
           if (qt < minSize && (val === 1 || !edge)) for (let t = 0; t < qt; t++) keep[q[t]] = setTo;
         }
       };
@@ -3938,7 +3956,7 @@ const APP = /*__APP__*/{ standalone: false };
     // gelaagd kunstwerk: klik op een vlek of gaatje om het op te vullen met de kleur eromheen
     if (trace.active && trace.mode === 'portrait' && portrait.kind === 'photo' && portrait.bgPick && !trace.busy && !(spaceDown || e.button === 1)) {
       const fx = (p.x - trace.x) / trace.widthMm, fy = (p.y - trace.y) / (trace.widthMm * trace.h / trace.w);
-      if (fx >= 0 && fx <= 1 && fy >= 0 && fy <= 1) { portrait.bgSeeds.push([fx, fy]); runPortrait(); return; }
+      if (fx >= 0 && fx <= 1 && fy >= 0 && fy <= 1) { portrait.bgSeeds.push([fx, fy]); portrait.justClicked = true; runPortrait(); return; }
     }
     if (trace.active && trace.mode === 'stack' && trace.stack.length && !(spaceDown || e.button === 1)) {
       const th = trace.widthMm * trace.h / trace.w;
